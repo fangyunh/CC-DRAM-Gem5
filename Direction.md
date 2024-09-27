@@ -14,3 +14,41 @@ Caches: 3 cache levels
 
 DRAM: DDR4
 
+Emulation: Syscall emulation mode
+
+### Memory Controller
+
+Source: https://www.gem5.org/documentation/general_docs/memory_system/gem5_memory_system/
+
+*Folder Address: /gem5/src/mem/mem_ctrl.hh*
+
+All objects that connect to the memory system inherit from `MemObject`.
+
+```c++
+// Pure virtual functions, returns a port corresponding to the given name and index. 
+getMasterPort(const std::string &name, PortID idx);
+getSlavePort(const std::string &name, PortID idx);
+```
+
+**MSHR and Write Buffer Queue**
+
+Miss Status and Handling Register (MSHR) queue holds a list of CPU's outstanding memory requests that require read access to lower memory level:
+
+- Cached Read / Write misses
+- Uncached Reads
+
+WriteBuffer queue holds:
+
+- Uncached writes
+- Writeback from evicted (& dirty) cache lines
+
+**DRAM Memory Controller**
+
+- Memory controller: port connecting to on-chip fabric (CPU)
+  - Recieves command packets from the CPU
+  - Enqueues into read and write queues
+  - Manage the command scheduling algorithm for read / write requests
+
+- DRAM interface
+  - Define architecture and timing parameters of the DRAM
+  - Manage media specifc operations (activation, precharge, refresh, low power modes, etc)
