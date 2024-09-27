@@ -30,6 +30,12 @@ system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
 system.cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 
+# Create memory controller
+system.mem_ctrl = MemCtrl()
+system.mem_ctrl.dram = DDR4_1600_8x8()
+system.mem_ctrl.dram.range = system.mem_ranges[0]
+system.mem_ctrl.port = system.membus.mem_side_ports
+
 # binary = #self define workload
 system.workload = SEWorkload.init_compatible(options.binary)
 
@@ -39,8 +45,8 @@ system.cpu.workload = process
 system.cpu.createThreads()
 
 # L1 Caches
-system.cpu.icache = L1ICache(options)
-system.cpu.dcache = L1DCache(options)
+system.cpu.icache = L1ICache(size='32kB', assoc=4)
+system.cpu.dcache = L1DCache(size='32kB', assoc=4)
 system.cpu.icache.connectCPU(system.cpu)
 system.cpu.dcache.connectCPU(system.cpu)
 
@@ -50,7 +56,7 @@ system.cpu.icache.connectBus(system.l2bus)
 system.cpu.dcache.connectBus(system.l2bus)
 
 # L2 cache
-system.l2cache = L2Cache(options)
+system.l2cache = L2Cache(size='256kB', assoc=8)
 system.l2cache.connectCPUSideBus(system.l2bus)
 
 # L2 connects L3
@@ -58,7 +64,7 @@ system.l3bus = L3XBar()
 system.l2cache.connectMemSideBus(system.l3bus)
 
 # L3 cache
-system.l3cache = L3Cache(options)
+system.l3cache = L3Cache(size='8MB', assoc=16)
 system.l3cache.connectCPUSideBus(system.l3bus)
 
 # L3 connects Main memory

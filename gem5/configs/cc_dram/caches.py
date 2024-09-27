@@ -23,11 +23,10 @@ class L1ICache(L1Cache):
     def connectCPU(self, cpu):
         self.cpu_side = cpu.icache_port
     
-    def __init__(self, options=None):
-        super(L1ICache, self).__init__(options)
-        if not options or not options.l1i_size:
-            return
-        self.size = options.l1i_size
+    def __init__(self, size='16kB', assoc=2):
+        super(L1ICache, self).__init__()
+        self.size = size
+        self.assoc = assoc
 
 # L1 data cache
 class L1DCache(L1Cache):
@@ -36,11 +35,10 @@ class L1DCache(L1Cache):
     def connectCPU(self, cpu):
         self.cpu_side = cpu.dcache_port
     
-    def __init__(self, options=None):
-        super(L1DCache, self).__init__(options)
-        if not options or not options.l1d_size:
-            return
-        self.size = options.l1d_size
+    def __init__(self, size='64kB', assoc=2):
+        super(L1ICache, self).__init__()
+        self.size = size
+        self.assoc = assoc
 
 # L2 cache
 class L2Cache(Cache):
@@ -58,11 +56,10 @@ class L2Cache(Cache):
     def connectBus(self, bus):
         self.mem_side = bus.cpu_side_ports
     
-    def __init__(self, options=None):
-        super(L2Cache, self).__init__(options)
-        if not options or not options.l2_size:
-            return
-        self.size = options.l2_size
+    def __init__(self, size='256kB', assoc=8):
+        super(L1ICache, self).__init__()
+        self.size = size
+        self.assoc = assoc
     
 # L3 cache
 class L3Cache(Cache):
@@ -80,11 +77,10 @@ class L3Cache(Cache):
     def connectMemSideBus(self, bus):
         self.mem_side = bus.cpu_side_ports
     
-    def __init__(self, options=None):
-        super(L3Cache, self).__init__(options)
-        if not options or not options.l3_size:
-            return
-        self.size = options.l3_size
+    def __init__(self, size='1MB', assoc=16):
+        super(L1ICache, self).__init__()
+        self.size = size
+        self.assoc = assoc
 
 def __init__(self, options=None):
     super(L1Cache, self).__init__()
