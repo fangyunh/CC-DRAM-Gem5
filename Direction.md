@@ -52,3 +52,13 @@ WriteBuffer queue holds:
 - DRAM interface
   - Define architecture and timing parameters of the DRAM
   - Manage media specifc operations (activation, precharge, refresh, low power modes, etc)
+
+
+
+## Objectives
+
+- Build a basic model that can test the latency when read from DRAM
+  - Understand gem5 codes about memory controller
+- Estimate the latency if the data block we read is compressed by algorithms (LZ4)
+- *(Support CXL on memory controller)*
+- Add cache on CXL-mem-controller to store hot data
