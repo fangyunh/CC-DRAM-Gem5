@@ -2,7 +2,7 @@
 docker build -t fyhgem5_img .
 
 **Create container gem5_v0 based on img:**
-docker run --name gem5_v0 -it -v D:\RPI\Compression_Capable_DRAM\:/home/root fyhgem5_img
+docker run --name gem5_v0 -it -v D:\RPI\CXL_mem_ctrl\:/home/root fyhgem5_img
 
 **Start a Container:**
 docker start -ai gem5_v0
