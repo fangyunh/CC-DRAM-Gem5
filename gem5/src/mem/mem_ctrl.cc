@@ -131,7 +131,7 @@ MemCtrl::recvAtomic(PacketPtr pkt)
     return recvAtomicLogic(pkt, dram);
 }
 
-
+// access the memory and return access latency
 Tick
 MemCtrl::recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr)
 {
@@ -403,6 +403,7 @@ MemCtrl::printQs() const
 #endif // TRACING_ON
 }
 
+// Enqueue read/write request 
 bool
 MemCtrl::recvTimingReq(PacketPtr pkt)
 {
@@ -679,6 +680,7 @@ MemCtrl::getBurstWindow(Tick cmd_tick)
     return (cmd_tick - burst_offset);
 }
 
+// Handle contention in command bus
 Tick
 MemCtrl::verifySingleCmd(Tick cmd_tick, Tick max_cmds_per_burst, bool row_cmd)
 {
