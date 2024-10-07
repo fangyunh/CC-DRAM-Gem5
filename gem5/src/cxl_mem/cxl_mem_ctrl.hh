@@ -3,7 +3,7 @@
  * DRAM is accessed by MemInterface* dram in MemCtrlParams
  * MemCtrl::recvTimingReq(PacketPtr pkt)
  * MemCtrl::CtrlStats Struct may contains some stat for latency
- * 
+ * Here is a static latency in accessAndRespond
  * Our latency is calculated from receives the request and ends at 
  * response the CPU
  */

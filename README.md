@@ -30,18 +30,6 @@ getMasterPort(const std::string &name, PortID idx);
 getSlavePort(const std::string &name, PortID idx);
 ```
 
-**MSHR and Write Buffer Queue**
-
-Miss Status and Handling Register (MSHR) queue holds a list of CPU's outstanding memory requests that require read access to lower memory level:
-
-- Cached Read / Write misses
-- Uncached Reads
-
-WriteBuffer queue holds:
-
-- Uncached writes
-- Writeback from evicted (& dirty) cache lines
-
 **DRAM Memory Controller**
 
 - Memory controller: port connecting to on-chip fabric (CPU)
@@ -59,6 +47,7 @@ WriteBuffer queue holds:
 
 - Build a basic model that can test the latency when read from DRAM
   - Understand gem5 codes about memory controller
+  - Our self-defined CXL_memory_Controller: */src/cxl_mem* & */configs/cxl_mem*
 - Estimate the latency if the data block we read is compressed by algorithms (LZ4)
 - *(Support CXL on memory controller)*
 - Add cache on CXL-mem-controller to store hot data
