@@ -49,6 +49,9 @@ class CXLMemCtrl : public MemCtrl
     void calculateAvgLatency();
 
     // Store the packets entry time to queue
+    std::unordered_map<PacketId, Tick> packetEntryTime;
+
+    // Store the latency
     std::unordered_map<PacketId, Tick> packetLatency;
 
     Tick totalLatency;

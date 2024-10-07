@@ -32,7 +32,7 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
    if (accepted) {
     Tick entryTime = curTick();
     // Store the start time of packet
-    packetLatency[pkt->id] = entryTime;
+    packetEntryTime[pkt->id] = entryTime;
     DPRINTF(PacketLatency, "Packet (id: %llu) received at tick %llu\n", pkt->id, entryTime);
    }
 
@@ -45,13 +45,14 @@ CXLMemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency,
 {
     Tick endTime = curTick();
 
-    auto it = packetLatency.find(pkt->id);
-    if (it != packetLatency.end()) {
+    auto it = packetEntryTime.find(pkt->id);
+    if (it != packetEntryTime.end()) {
         Tick entryTime = it->second;
         Tick latency = endTime - entryTime;
         totalLatency += latency;
         numPackets++;
-        packetLatency.erase(it);
+        packetEntryTime.erase(it);
+        packetLatency[it->first] = latency;
         DPRINTF(PacketLatency, "Packet (id: %llu) latency: %llu\n", it->first, latency);
     }
     
