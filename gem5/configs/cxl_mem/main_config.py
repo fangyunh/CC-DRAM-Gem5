@@ -30,6 +30,8 @@ system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
 system.cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 
+# Create CXL Memory Controller
+
 # Create memory controller
 system.mem_ctrl = MemCtrl()
 system.mem_ctrl.dram = DDR4_1600_8x8()

@@ -49,5 +49,5 @@ getSlavePort(const std::string &name, PortID idx);
   - Understand gem5 codes about memory controller
   - Our self-defined CXL_memory_Controller: */src/cxl_mem* & */configs/cxl_mem*
 - Estimate the latency if the data block we read is compressed by algorithms (LZ4)
-- *(Support CXL on memory controller)*
-- Add cache on CXL-mem-controller to store hot data
+- Support multiple channels and multple DRAMs
+- support cache in CXL Memory Controller
