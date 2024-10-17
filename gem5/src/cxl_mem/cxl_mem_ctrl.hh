@@ -114,14 +114,30 @@ class CXLMemCtrl : public ClockedObject
     /** Calculate the average latency */
     void calculateAvgLatency();
 
-    /** Store packet's start tick */
-    std::unordered_map<PacketId, Tick> packetInitialTick;
+    /** Check if request queue is full */
+    bool reqQueueFull() const;
+
+    /** Check if response queue is full */
+    bool respQueueFull() const;
+
+    /**
+     * Bunch of things requires to setup "events" in gem5
+     * When event "respondEvent" occurs for example, the method
+     * processRespondEvent is called; no parameters are allowed
+     * in these methods
+     */
+
+    virtual void processRequestQueue();
+    EventFunctionWrapper processReqEvent;
+
+    virtual void processResponseQueue();
+    EventFunctionWrapper processRespEvent;
 
     /** Store the latency */ 
     std::unordered_map<PacketId, Tick> packetLatency;
 
     /** Request queue */
-    std::deque<PacketPtr*> reqQueue;
+    std::deque<PacketPtr> reqQueue;
 
     /**
      * Response queue where read packets wait after we're done working
@@ -131,25 +147,38 @@ class CXLMemCtrl : public ClockedObject
      * as sizing the read queue, this and the main read queue need to
      * be added together.
      */
-    std::deque<PacketPtr*> respQueue;
+    std::deque<PacketPtr> respQueue;
 
     uint32_t requestQueueSize;
     uint32_t responseQueueSize;
 
+    uint32_t currentReqQueueSize;
+    uint32_t currentRespQueueSize;
+
+    /** Retry flags of request and response  */
+    bool retryReq;
+    bool retryResp;
+
     /** statistc for latency */
     struct CXLStats : public statistics::Group
     {
-        CXLStats(CXLMemCtrl &cxlmc);
+      CXLStats(CXLMemCtrl &cxlmc);
 
-        void regStats() override;
+      void regStats() override;
 
-        CXLMemCtrl &cxlmc;
+      CXLMemCtrl &cxlmc;
 
-        // Statistics that model needs to capture
-        statistics::Scalar totalLatency;
+      // Overall statistics
+      statistics::Scalar totalLatency;
+      statistics::Formula avgLatency;
+      statistics::Histogram latencyHistogram;
 
-
+      // Per-requestor statistics
+      statistics::Vector perRequestorLatency;
+      statistics::Vector perRequestorAccesses;
+      statistics::Formula perRequestorAvgLatency;
     };
+
 
     CXLStats stats;
 
@@ -165,7 +194,8 @@ class CXLMemCtrl : public ClockedObject
     virtual bool recvTimingResp(PacketPtr pkt);
 
     /** Handle retries */
-    virtual void recvRetry();
+    virtual void recvReqRetry();
+    virtual void recvRespRetry();
 
     /** Provide address ranges */
     AddrRangeList getAddrRanges() const;

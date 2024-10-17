@@ -17,11 +17,14 @@ namespace memory
 // Constructor
 CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
     ClockedObject(p), 
-    cpu_side_port(name() + '.cpu_side_port', *this),
-    mem_ctrl_side_port(name() + '.mem_ctrl_side_port', *this),
+    cpu_side_port(name() + ".cpu_side_port", *this),
+    mem_ctrl_side_port(name() + ".mem_ctrl_side_port", *this),
+    processReqEvent([this]{ processRequestQueue(); }, name() + ".processReqEvent"),
+    processRespEvent([this]{ processResponseQueue(); }, name() + ".processRespEvent"),
     requestQueueSize(p.request_buffer_size),
     responseQueueSize(p.response_buffer_size),
     prevArrival(0),
+    retryReq(false), retryResp(false);
     stats(*this)
 {
     DPRINTF(CXLMemCtrl, "Setting up CXL Memory Controller\n");
@@ -69,7 +72,6 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
     panic_if(!(pkt->isRead() || pkt->isWrite()),
              "Should only see read and writes at memory controller\n");
     
-    // Store initial tick of packet
     packetLatency[pkt->id] = curTick;
     
     // Calc avg gap between requests
@@ -78,12 +80,18 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
     }
     prevArrival = curTick();
 
-    // Forward the packet to the memory controller side port
-    if (!mem_ctrl_side_port.sendTimingReq(pkt)) {
-        DPRINTF(CXLMemCtrl, "Cannot forward request now, will retry\n");
-        // Store the packet for retry
-        retryPkt = pkt;
+    // Store initial tick of packet
+    if (reqQueueFull()) {
+        DPRINTF(CXLMemCtrl, "Request queue full, not accepting\n");
+        retryReq = true;
         return false;
+    }
+
+    reqQueue.push_back(pkt);
+
+    // Forward the packet to the memory controller side port
+    if (!processReqEvent.scheduled()) {
+        schedule(processReqEvent, curTick());
     }
 
     return true;
@@ -108,19 +116,99 @@ CXLMemCtrl::recvTimingResp(PacketPtr pkt)
         packetLatency.erase(it);
     }
 
-    cpu_side_port.schedTimingResp(pkt, curTick());
+    if (respQueueFull()) {
+        DPRINTF(CXLMemCtrl, "Response queue full, cannot accept packet\n");
+        retryResp = true;
+        return false;
+    }
+
+    respQueue.push_back(pkt);
+
+    // Schedule event to process the response queue if not already scheduled
+    if (!processRespEvent.scheduled()) {
+        schedule(processRespEvent, curTick());
+    }
 
     return true;
 }
 
 void
-CXLMemCtrl::recvRetry()
+CXLMemCtrl::processRequestQueue()
 {
-    // Attempt to resend the request packet if blocked earlier
-    if (retryPkt) {
-        if (mem_ctrl_side_port.sendTimingReq(retryPkt)) {
-            retryPkt = nullptr;
+    while (!reqQueue.empty()) {
+        PacketPtr pkt = reqQueue.front();
+
+        // Try to send the packet to the memory controller
+        if (!mem_ctrl_side_port.sendTimingReq(pkt)) {
+            DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
+            // Will retry when recvReqRetry is called
+            break;
         }
+
+        DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
+        reqQueue.pop_front();
+    }
+
+    // If there are still packets in the queue, schedule the event again
+    if (!reqQueue.empty() && !processReqEvent.scheduled()) {
+        schedule(processReqEvent, clockEdge(Cycles(1)));
+    }
+}
+
+void
+CXLMemCtrl::processResponseQueue()
+{
+    while (!respQueue.empty()) {
+        PacketPtr pkt = respQueue.front();
+
+        // Try to send the response back to the CPU
+        if (!cpu_side_port.sendTimingResp(pkt)) {
+            DPRINTF(CXLMemCtrl, "CPU cannot accept response, will retry\n");
+            // Will retry when recvRespRetry is called
+            break;
+        }
+
+        DPRINTF(CXLMemCtrl, "Sent response back to CPU\n");
+        respQueue.pop_front();
+    }
+
+    // If there are still packets in the queue, schedule the event again
+    if (!respQueue.empty() && !processRespEvent.scheduled()) {
+        schedule(processRespEvent, clockEdge(Cycles(1)));
+    }
+}
+
+void
+CXLMemCtrl::recvReqRetry()
+{
+    DPRINTF(CXLMemCtrl, "Received retry request from MemCtrl\n");
+
+    // Attempt to resend packets from the request queue
+    if (!processReqEvent.scheduled()) {
+        schedule(processReqEvent, curTick());
+    }
+
+    // If we previously told the CPU to retry, and we now have space
+    if (retryReq && !reqQueueFull()) {
+        retryReq = false;
+        cpu_side_port.sendRetryReq();
+    }
+}
+
+void
+CXLMemCtrl::recvRespRetry()
+{
+    DPRINTF(CXLMemCtrl, "Received retry response from CPU\n");
+
+    // Attempt to resend packets from the response queue
+    if (!processRespEvent.scheduled()) {
+        schedule(processRespEvent, curTick());
+    }
+
+    // If we previously told MemCtrl to retry, and we now have space
+    if (retryResp && !respQueueFull()) {
+        retryResp = false;
+        mem_ctrl_side_port.sendRetryResp();
     }
 }
 
@@ -133,6 +221,18 @@ CXLMemCtrl::getAddrRanges() const
         ranges = mem_ctrl_side_port.peer()->getAddrRanges();
     }
     return ranges;
+}
+
+bool
+CXLMemCtrl::reqQueueFull() const
+{
+    return reqQueue.size() >= requestQueueSize; 
+}
+
+bool
+CXLMemCtrl::respQueueFull() const
+{
+    return respQueue.size() >= responseQueueSize; 
 }
 
 void
@@ -252,17 +352,15 @@ CXLMemCtrl::CPUPort::recvTimingReq(PacketPtr pkt)
     return ctrl.recvTimingReq(pkt);
 }
 
-void
-CXLMemCtrl::CPUPort::recvRespRetry()
-{
-    queue.retry();
-    ctrl.recvRetry();
-}
-
 AddrRangeList
 CXLMemCtrl::CPUPort::getAddrRanges() const
 {
     return ctrl.getAddrRanges();
+}
+void
+CXLMemCtrl::CPUPort::recvRespRetry()
+{
+    ctrl.recvRespRetry();
 }
 
 CXLMemCtrl::MemCtrlPort::
@@ -270,13 +368,6 @@ MemCtrlPort(const std::string& name, CXLMemCtrl& _ctrl)
     : QueuedRequestPort(name, queue), queue(_ctrl, *this),
       ctrl(_ctrl)
 { }
-
-void
-CXLMemCtrl::MemCtrlPort::recvReqRetry()
-{
-    queue.retry();
-    ctrl.recvRetry();
-}
 
 bool
 CXLMemCtrl::MemCtrlPort::recvTimingResp(PacketPtr pkt)
@@ -289,7 +380,14 @@ CXLMemCtrl::MemCtrlPort::sendTimingReq(PacketPtr pkt)
 {
     /** Schedule the request to be sent at the current tick */
     queue.schedSendTiming(pkt, curTick());
+
     return true;
+}
+
+void
+CXLMemCtrl::MemCtrlPort::recvReqRetry()
+{
+    ctrl.recvReqRetry();
 }
 
 }   
