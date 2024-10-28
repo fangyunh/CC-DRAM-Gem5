@@ -11,14 +11,12 @@ class CXLMemCtrl(ClockedObject):
     # Port connects with CPU
     cpu_side_port = ResponsePort("Port connected to CPU")
 
-    # Port connects with Memory Controller
-    memctrl_side_port = ResponsePort("Port connected to MemCtrl")
+    # Ports connect with Memory Controllers
+    memctrl_side_port = RequestPort("Ports connected to MemCtrls")
 
     # Buffer size of read and write queue
     request_buffer_size = Param.Unsigned(32, "Request queue size")
     response_buffer_size = Param.Unsigned(32, "Response queue size")
-
-    
 
 
     

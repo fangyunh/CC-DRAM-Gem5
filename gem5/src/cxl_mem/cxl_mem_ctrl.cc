@@ -3,8 +3,6 @@
 #include "base/trace.hh"
 #include "debug/DRAM.hh"
 #include "debug/CXLMemCtrl.hh"
-#include "debug/PacketLatency.hh"
-#include "debug/Drain.hh"
 #include "mem/mem_ctrl.hh"
 #include "sim/system.hh"
 
@@ -18,18 +16,13 @@ namespace memory
 CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
     ClockedObject(p), 
     cpu_side_port(name() + ".cpu_side_port", *this),
-    mem_ctrl_side_port(name() + ".mem_ctrl_side_port", *this),
-    processReqEvent([this]{ processRequestQueue(); }, name() + ".processReqEvent"),
-    processRespEvent([this]{ processResponseQueue(); }, name() + ".processRespEvent"),
+    memctrl_side_port(name() + ".memctrl_side_port", *this),
     requestQueueSize(p.request_buffer_size),
     responseQueueSize(p.response_buffer_size),
     prevArrival(0),
-    retryReq(false), retryResp(false);
     stats(*this)
 {
     DPRINTF(CXLMemCtrl, "Setting up CXL Memory Controller\n");
-    reqQueue.resize(p.requestQueueSize);
-    respQueue.resize(p.responseQueueSize);
 }
 
 void
@@ -39,29 +32,29 @@ CXLMemCtrl::init()
         fatal("CXLMemCtrl %s is unconnected on CPU side port!\n", name());
     }
 
-    if (!mem_ctrl_side_port.isConnected()) {
+    if (!memctrl_side_port.isConnected()) {
         fatal("CXLMemCtrl %s is unconnected on MemCtrl side port!\n", name());
     }
-
-    // You may need to send range change notifications
-    cpu_side_port.sendRangeChange();
 }
+
 
 Port &
 CXLMemCtrl::getPort(const std::string &if_name, PortID idx)
 {
-    if (if_name == "cpu_side") {
+    if (if_name == "cpu_side_port") {
         return cpu_side_port;
-    } else if (if_name == "mem_side") {
-        return mem_ctrl_side_port;
-    } else {
+    }
+    else if (if_name == "memctrl_side_port"){
+        return memctrl_side_port;
+    }
+    else {
         // Pass it to the base class
         return ClockedObject::getPort(if_name, idx);
     }
 }
 
 bool
-CXLMemCtrl::recvTimingReq(PacketPtr pkt)
+CXLMemCtrl::handleRequest(PacketPtr pkt)
 {
     DPRINTF(CXLMemCtrl, "Received timing request: %s addr %#x size %d\n",
             pkt->cmdString(), pkt->getAddr(), pkt->getSize());
@@ -71,8 +64,8 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
 
     panic_if(!(pkt->isRead() || pkt->isWrite()),
              "Should only see read and writes at memory controller\n");
-    
-    packetLatency[pkt->id] = curTick;
+
+    packetLatency[pkt->id] = curTick();
     
     // Calc avg gap between requests
     if (prevArrival != 0) {
@@ -83,22 +76,19 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
     // Store initial tick of packet
     if (reqQueueFull()) {
         DPRINTF(CXLMemCtrl, "Request queue full, not accepting\n");
-        retryReq = true;
         return false;
     }
 
     reqQueue.push_back(pkt);
 
     // Forward the packet to the memory controller side port
-    if (!processReqEvent.scheduled()) {
-        schedule(processReqEvent, curTick());
-    }
+    memctrl_side_port.processRequestQueue();
 
     return true;
 }
 
 bool
-CXLMemCtrl::recvTimingResp(PacketPtr pkt)
+CXLMemCtrl::handleResponse(PacketPtr pkt)
 {
     DPRINTF(CXLMemCtrl, "Received timing response: %s addr %#x size %d\n",
             pkt->cmdString(), pkt->getAddr(), pkt->getSize());
@@ -118,99 +108,21 @@ CXLMemCtrl::recvTimingResp(PacketPtr pkt)
 
     if (respQueueFull()) {
         DPRINTF(CXLMemCtrl, "Response queue full, cannot accept packet\n");
-        retryResp = true;
+        needRetry = true;
         return false;
     }
 
     respQueue.push_back(pkt);
 
-    // Schedule event to process the response queue if not already scheduled
-    if (!processRespEvent.scheduled()) {
-        schedule(processRespEvent, curTick());
-    }
+    // Forward the packet to the CPU side port
+    cpu_side_port.processResponseQueue();
+
+    // retry if need it
+    cpu_side_port.retryResp();
 
     return true;
 }
 
-void
-CXLMemCtrl::processRequestQueue()
-{
-    while (!reqQueue.empty()) {
-        PacketPtr pkt = reqQueue.front();
-
-        // Try to send the packet to the memory controller
-        if (!mem_ctrl_side_port.sendTimingReq(pkt)) {
-            DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
-            // Will retry when recvReqRetry is called
-            break;
-        }
-
-        DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
-        reqQueue.pop_front();
-    }
-
-    // If there are still packets in the queue, schedule the event again
-    if (!reqQueue.empty() && !processReqEvent.scheduled()) {
-        schedule(processReqEvent, clockEdge(Cycles(1)));
-    }
-}
-
-void
-CXLMemCtrl::processResponseQueue()
-{
-    while (!respQueue.empty()) {
-        PacketPtr pkt = respQueue.front();
-
-        // Try to send the response back to the CPU
-        if (!cpu_side_port.sendTimingResp(pkt)) {
-            DPRINTF(CXLMemCtrl, "CPU cannot accept response, will retry\n");
-            // Will retry when recvRespRetry is called
-            break;
-        }
-
-        DPRINTF(CXLMemCtrl, "Sent response back to CPU\n");
-        respQueue.pop_front();
-    }
-
-    // If there are still packets in the queue, schedule the event again
-    if (!respQueue.empty() && !processRespEvent.scheduled()) {
-        schedule(processRespEvent, clockEdge(Cycles(1)));
-    }
-}
-
-void
-CXLMemCtrl::recvReqRetry()
-{
-    DPRINTF(CXLMemCtrl, "Received retry request from MemCtrl\n");
-
-    // Attempt to resend packets from the request queue
-    if (!processReqEvent.scheduled()) {
-        schedule(processReqEvent, curTick());
-    }
-
-    // If we previously told the CPU to retry, and we now have space
-    if (retryReq && !reqQueueFull()) {
-        retryReq = false;
-        cpu_side_port.sendRetryReq();
-    }
-}
-
-void
-CXLMemCtrl::recvRespRetry()
-{
-    DPRINTF(CXLMemCtrl, "Received retry response from CPU\n");
-
-    // Attempt to resend packets from the response queue
-    if (!processRespEvent.scheduled()) {
-        schedule(processRespEvent, curTick());
-    }
-
-    // If we previously told MemCtrl to retry, and we now have space
-    if (retryResp && !respQueueFull()) {
-        retryResp = false;
-        mem_ctrl_side_port.sendRetryResp();
-    }
-}
 
 AddrRangeList
 CXLMemCtrl::getAddrRanges() const
@@ -218,9 +130,15 @@ CXLMemCtrl::getAddrRanges() const
     // Obtain address ranges from the memory controller
     AddrRangeList ranges;
     if (mem_ctrl_side_port.isConnected()) {
-        ranges = mem_ctrl_side_port.peer()->getAddrRanges();
+        ranges = mem_ctrl_side_port.getAddrRanges();
     }
     return ranges;
+}
+
+void
+CXLMemCtrl::sendRangeChange()
+{
+    cpu_side_port.sendRangeChange();
 }
 
 bool
@@ -342,14 +260,40 @@ CXLStats::regStats()
 
 CXLMemCtrl::CPUPort::
 CPUPort(const std::string& name, CXLMemCtrl& _ctrl)
-    : QueuedResponsePort(name, queue), queue(_ctrl, *this, true),
+    : ResponsePort(name), needRetry(false), blockedPacket(nullptr),
       ctrl(_ctrl)
 { }
+
+// Send response back to CPU
+void
+CXLMemCtrl::CPUPort::processResponseQueue()
+{
+    while (!respQueue.empty()) {
+        PacketPtr pkt = respQueue.front();
+
+        // Try to send the packet to the memory controller
+        if (!cpu_side_port.sendTimingResp(pkt)) {
+            DPRINTF(CXLMemCtrl, "CPU cannot accept response, will retry\n");
+            // Retry the packet
+            blockedPacket = pkt;
+            break;
+        }
+
+        DPRINTF(CXLMemCtrl, "Sent response back to CPU\n");
+        respQueue.pop_front();
+    }
+}
 
 bool
 CXLMemCtrl::CPUPort::recvTimingReq(PacketPtr pkt)
 {
-    return ctrl.recvTimingReq(pkt);
+    // Just forward to the cxlmemctrl.
+    if (!ctrl.handleRequest(pkt)) {
+        needRetry = true;
+        return false;
+    } else {
+        return true;
+    }
 }
 
 AddrRangeList
@@ -357,37 +301,83 @@ CXLMemCtrl::CPUPort::getAddrRanges() const
 {
     return ctrl.getAddrRanges();
 }
+
+void
+CXLMemCtrl::CPUPort::retryResp()
+{
+    if (needRetry) {
+        needRetry = false;
+        DPRINTF(CXLMemCtrl, "Sending retry req for %d\n", id);
+        sendRetryReq();
+        respQueue.pop_front();
+    }    
+}
+
 void
 CXLMemCtrl::CPUPort::recvRespRetry()
 {
-    ctrl.recvRespRetry();
+    // We should have a blocked packet if this function is called.
+    assert(blockedPacket != nullptr);
+
+    // Grab the blocked packet.
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    // Try to resend it. It's possible that it fails again.
+    processResponseQueue(pkt);
 }
 
 CXLMemCtrl::MemCtrlPort::
 MemCtrlPort(const std::string& name, CXLMemCtrl& _ctrl)
-    : QueuedRequestPort(name, queue), queue(_ctrl, *this),
+    : RequestPort(name), needRetry(false), blockedPacket(nullptr),
       ctrl(_ctrl)
 { }
+
+
+// Send request to memory controller
+void
+CXLMemCtrl::MemCtrlPort::processRequestQueue()
+{
+    while (!reqQueue.empty()) {
+        PacketPtr pkt = reqQueue.front();
+
+        // Try to send the response back to the CPU
+        if (!memctrl_side_port.sendTimingReq(pkt)) {
+            DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
+            // Will retry when recvReqRetry is called
+            blockedPacket = pkt;
+            break;
+        }
+
+        DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
+        reqQueue.pop_front();
+    }
+}
 
 bool
 CXLMemCtrl::MemCtrlPort::recvTimingResp(PacketPtr pkt)
 {
-    return ctrl.recvTimingResp(pkt);
-}
-
-bool
-CXLMemCtrl::MemCtrlPort::sendTimingReq(PacketPtr pkt)
-{
-    /** Schedule the request to be sent at the current tick */
-    queue.schedSendTiming(pkt, curTick());
-
-    return true;
+    return ctrl.handleResponse(pkt);
 }
 
 void
 CXLMemCtrl::MemCtrlPort::recvReqRetry()
 {
-    ctrl.recvReqRetry();
+    // We should have a blocked packet if this function is called.
+    assert(blockedPacket != nullptr);
+
+    // Grab the blocked packet.
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    // Try to resend it. It's possible that it fails again.
+    processRequestQueue();
+}
+
+void
+CXLMemCtrl::MemCtrlPort::recvRangeChange()
+{
+    ctrl.sendRangeChange();
 }
 
 }   

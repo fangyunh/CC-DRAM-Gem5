@@ -18,6 +18,7 @@
 #include "base/statistics.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
+#include "mem/port.hh"
 #include "mem/qport.hh"
 #include "enums/MemSched.hh"
 #include "params/CXLMemCtrl.hh"
@@ -60,44 +61,69 @@ class CXLMemCtrl : public ClockedObject
 {
   protected:
     /** Ports */
-    class CPUPort: public QueuedResponsePort
+    class CPUPort: public ResponsePort
     {
-        RespPacketQueue queue;
-        CXLMemCtrl& ctrl;
-      
       public:
-        
+        // The object that owns this object
+        CXLMemCtrl& ctrl;
+        // If we tried to send a packet and it was blocked, store it here
+        PacketPtr blockedPacket;
+
+        bool needRetry;
+        // send request
+        void processResponseQueue();
+
         CPUPort(const std::string& name, CXLMemCtrl& _ctrl);
-      
+
+        AddrRangeList getAddrRanges() const override;
+
+        // retry the resquest if blocked
+        void retryResp();
+        
       protected:
 
         bool recvTimingReq(PacketPtr pkt) override;
         void recvRespRetry() override;
-        AddrRangeList getAddrRanges() const override;
     };
 
     CPUPort cpu_side_port;
 
-    class MemCtrlPort: public QueuedRequestPort
+    class MemCtrlPort: public RequestPort
     {
-        ReqPacketQueue queue;
-        CXLMemCtrl& ctrl;
-
       public:
+        // The object that owns this object
+        CXLMemCtrl& ctrl;
+        // If we tried to send a packet and it was blocked, store it here
+        PacketPtr blockedPacket;
+
+        bool needRetry;
 
         MemCtrlPort(const std::string& name, CXLMemCtrl& _ctrl);
 
+        /**
+         * Get a list of the non-overlapping address ranges the owner is
+         * responsible for. All response ports must override this function
+         * and return a populated list with at least one item.
+         *
+         * @return a list of ranges responded to
+         */
+        AddrRangeList getAddrRanges() const override;
+
+        // send response
+        void processRequestQueue();
+
+        // // retry the response if blocked
+        // bool retryResp;
       protected:
 
         void recvReqRetry() override;
         bool recvTimingResp(PacketPtr pkt) override;
         bool sendTimingReq(PacketPtr pkt);
+        void recvRangeChange() override;
     };
 
-    MemCtrlPort mem_ctrl_side_port;
-
-    Port &getPort(const std::string &if_name,
-                  PortID idx=InvalidPortID) override;
+  
+    MemCtrlPort memctrl_side_port;
     
     /**
      * Determine if there is a packet that can issue.
@@ -114,50 +140,8 @@ class CXLMemCtrl : public ClockedObject
     /** Calculate the average latency */
     void calculateAvgLatency();
 
-    /** Check if request queue is full */
-    bool reqQueueFull() const;
-
-    /** Check if response queue is full */
-    bool respQueueFull() const;
-
-    /**
-     * Bunch of things requires to setup "events" in gem5
-     * When event "respondEvent" occurs for example, the method
-     * processRespondEvent is called; no parameters are allowed
-     * in these methods
-     */
-
-    virtual void processRequestQueue();
-    EventFunctionWrapper processReqEvent;
-
-    virtual void processResponseQueue();
-    EventFunctionWrapper processRespEvent;
-
     /** Store the latency */ 
     std::unordered_map<PacketId, Tick> packetLatency;
-
-    /** Request queue */
-    std::deque<PacketPtr> reqQueue;
-
-    /**
-     * Response queue where read packets wait after we're done working
-     * with them, but it's not time to send the response yet. The
-     * responses are stored separately mostly to keep the code clean
-     * and help with events scheduling. For all logical purposes such
-     * as sizing the read queue, this and the main read queue need to
-     * be added together.
-     */
-    std::deque<PacketPtr> respQueue;
-
-    uint32_t requestQueueSize;
-    uint32_t responseQueueSize;
-
-    uint32_t currentReqQueueSize;
-    uint32_t currentRespQueueSize;
-
-    /** Retry flags of request and response  */
-    bool retryReq;
-    bool retryResp;
 
     /** statistc for latency */
     struct CXLStats : public statistics::Group
@@ -182,29 +166,52 @@ class CXLMemCtrl : public ClockedObject
 
     CXLStats stats;
 
-    virtual bool respQEmpty()
-    {
-        return respQueue.empty();
-    }
+    /** Handle Request */
+    bool handleRequest(PacketPtr pkt);
 
-     /** Handle timing requests */
-    virtual bool recvTimingReq(PacketPtr pkt);
-
-    /** Handle timing responses */
-    virtual bool recvTimingResp(PacketPtr pkt);
-
-    /** Handle retries */
-    virtual void recvReqRetry();
-    virtual void recvRespRetry();
+    /** Handle Response */
+    bool handleResponse(PacketPtr pkt);
 
     /** Provide address ranges */
     AddrRangeList getAddrRanges() const;
 
+    bool reqQEmpty()
+    {
+        return reqQueue.empty();
+    }
+
+    bool respQEmpty()
+    {
+        return respQueue.empty();
+    }
+
+    /** Check if response queue is full */
+    bool reqQueueFull() const;
+
+    /** Check if request queue is full */
+    bool respQueueFull() const;
+
+    /**
+     * Tell the CPU side to ask for our memory ranges.
+     */
+    void sendRangeChange();
+
     Tick prevArrival;
+    // True if this is currently blocked waiting for a response.
+    bool blocked;
 
   public:
+    uint32_t requestQueueSize;
+    uint32_t responseQueueSize;
+    /** Request queue */
+    std::deque<PacketPtr> respQueue;
+    /** Resp queue */ 
+    std::deque<PacketPtr> reqQueue;
+
     CXLMemCtrl(const CXLMemCtrlParams &p);
     virtual void init() override;
+    Port &getPort(const std::string &if_name,
+                  PortID idx=InvalidPortID) override;
     ~CXLMemCtrl() {}
 };
 
