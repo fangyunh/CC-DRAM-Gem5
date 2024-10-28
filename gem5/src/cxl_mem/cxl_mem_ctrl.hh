@@ -70,19 +70,15 @@ class CXLMemCtrl : public ClockedObject
         PacketPtr blockedPacket;
 
         bool needRetry;
-        // send request
-        void processResponseQueue();
 
         CPUPort(const std::string& name, CXLMemCtrl& _ctrl);
 
         AddrRangeList getAddrRanges() const override;
-
-        // retry the resquest if blocked
-        void retryResp();
         
       protected:
 
         bool recvTimingReq(PacketPtr pkt) override;
+        bool sendTimingResp(PacketPtr pkt) override;
         void recvRespRetry() override;
     };
 
@@ -109,28 +105,25 @@ class CXLMemCtrl : public ClockedObject
          */
         AddrRangeList getAddrRanges() const override;
 
-        // send response
-        void processRequestQueue();
-
         // // retry the response if blocked
         // bool retryResp;
       protected:
 
         void recvReqRetry() override;
+        void sendTimingReq(pkt) override;
         bool recvTimingResp(PacketPtr pkt) override;
-        bool sendTimingReq(PacketPtr pkt);
         void recvRangeChange() override;
     };
-
-  
+    
     MemCtrlPort memctrl_side_port;
     
-    /**
-     * Determine if there is a packet that can issue.
-     *
-     * @param pkt The packet to evaluate
-     */
-    virtual bool packetReady(MemPacket* pkt, MemInterface* mem_intr);
+    // send request
+    virtual void processRequestEvent();
+    EventFunctionWrapper reqEvent;
+
+    // send response
+    virtual void processResponseEvent();
+    EventFunctionWrapper respEvent;
 
     /**
      * Used for debugging to observe the contents of the queues.
