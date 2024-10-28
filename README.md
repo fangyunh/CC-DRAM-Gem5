@@ -10,7 +10,7 @@ Nowadays, DRAM resources is valuable. To expand the limited DRAM and bandwidth o
 
 CPU: single core X86TimingSimpleCPU()
 
-Caches: 3 cache levels
+Caches: 2 cache levels
 
 DRAM: DDR4
 
