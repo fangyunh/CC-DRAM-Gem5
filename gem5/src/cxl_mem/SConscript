@@ -1,5 +1,7 @@
 Import('*')
 
+SimObject('CXLMemCtrl.py', sim_objects=['CXLMemCtrl'])
+
 Source('cxl_mem_ctrl.cc')
 
 DebugFlag('CXLMemCtrl')

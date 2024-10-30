@@ -1,9 +1,7 @@
 import m5
 from m5.objects import *
-from caches import *
-import argparse
 
-# Parent of all other objects in the system
+# Create the system
 system = System()
 
 # Clock and voltage domain setup
@@ -15,44 +13,20 @@ system.clk_domain.voltage_domain = VoltageDomain()
 system.mem_mode = 'timing'
 total_memory = '4GB'
 num_channels = 4  # Number of DRAM channels
-per_channel_mem = int(m5.eval(total_memory)) // num_channels
+per_channel_mem = '1GB'
+
 system.mem_ranges = [AddrRange(per_channel_mem) for _ in range(num_channels)]
 
 # Instantiate the CPU
 system.cpu = X86TimingSimpleCPU()
 
-# Cache Parameter Configuration in Command Line
-parser = argparse.ArgumentParser(description='A simple system with 3-level cache.')
-parser.add_argument("binary", default="", nargs="?", type=str, help="Path to binary to execute")
-parser.add_argument("--l1i_size", help=f"L1 instruction cache size. Default: 16kB.")
-parser.add_argument("--l1d_size", help="L1 data cache size. Default: 64kB.")
-parser.add_argument("--l2_size", help="L2 cache size. Default 256kB.")
-options = parser.parse_args()
-
-# Define the workload (replace with your actual binary path)
-binary = "tests/test-progs/hello/bin/x86/linux/hello"  # Example binary path
-system.workload = SEWorkload.init_compatible(options.binary)
-
-# Create and assign a process to the CPU
-process = Process()
-process.cmd = [binary]
-system.cpu.workload = process
-system.cpu.createThreads()
-
-# Instantiate L1 Instruction and Data Caches
-system.cpu.icache = L1ICache(options)
-system.cpu.dcache = L1DCache(options)
-system.cpu.icache.connectCPU(system.cpu)
-system.cpu.dcache.connectCPU(system.cpu)
-
-# Create an L2 bus and connect L1 caches to it
-system.l2bus = L2XBar()
-system.cpu.icache.connectBus(system.l2bus)
-system.cpu.dcache.connectBus(system.l2bus)
-
-# Instantiate and connect the L2 Cache
-system.l2cache = L2Cache(options)
-system.l2cache.connectCPUSideBus(system.l2bus)
+# Create a simple cache
+system.cache = SimpleCache(size="1kB")
+# Connect the I and D cache ports of the CPU to the memobj.
+# Since cpu_side is a vector port, each time one of these is connected, it will
+# create a new instance of the CPUSidePort class
+system.cpu.icache_port = system.cache.cpu_side
+system.cpu.dcache_port = system.cache.cpu_side
 
 # Instantiate the CXL Memory Controller with multiple channels
 system.cxl_mem_ctrl = CXLMemCtrl(
@@ -61,7 +35,7 @@ system.cxl_mem_ctrl = CXLMemCtrl(
 )
 
 # Connect L2 cache to the CXL memory controller
-system.l2cache.mem_side = system.cxl_mem_ctrl.cpu_side_port
+system.cache.mem_side = system.cxl_mem_ctrl.cpu_side_port
 
 # Instantiate the memory bus
 system.membus = SystemXBar()
@@ -86,20 +60,24 @@ for i in range(num_channels):
     mem_ctrl.port = system.membus.mem_side_ports
     system.mem_ctrls.append(mem_ctrl)
 
-# Below is single channel config
-# Create a DDR4 memory controller and connect it to the membus
-# system.mem_ctrl = MemCtrl()
-# A single DDR4-2400 x64 channel (one command and address bus), with
-# timings based on a DDR4-2400 8 Gbit datasheet (Micron MT40A1G8)
-# in an 8x8 configuration.
-# Total channel capacity is 16GiB
-# 8 devices/rank * 2 ranks/channel * 1GiB/device = 16GiB/channel
-# system.mem_ctrl.dram = DDR4_2400_8x8()
-# system.mem_ctrl.dram.range = system.mem_ranges[0]
-# system.mem_ctrl.port = system.membus.mem_side_ports
-
-# Connect the system up to the membus
+# Connect the system up to the memory bus
 system.system_port = system.membus.cpu_side_ports
+
+# Create a process for a simple "Hello World" application
+process = Process()
+# Set the command
+# grab the specific path to the binary
+thispath = os.path.dirname(os.path.realpath(__file__))
+binpath = os.path.join(
+    thispath, "../../../", "tests/test-progs/hello/bin/x86/linux/hello"
+)
+# cmd is a list which begins with the executable (like argv)
+process.cmd = [binpath]
+# Set the cpu to use the process as its workload and create thread contexts
+system.cpu.workload = process
+system.cpu.createThreads()
+
+system.workload = SEWorkload.init_compatible(binpath)
 
 # Instantiate the Root object and begin simulation
 root = Root(full_system=False, system=system)

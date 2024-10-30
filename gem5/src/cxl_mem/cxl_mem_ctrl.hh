@@ -76,9 +76,11 @@ class CXLMemCtrl : public ClockedObject
         AddrRangeList getAddrRanges() const override;
         
       protected:
+        // Support in future
+        Tick recvAtomic(PacketPtr pkt) override;
+        void recvFunctional(PacketPtr pkt) override;
 
         bool recvTimingReq(PacketPtr pkt) override;
-        bool sendTimingResp(PacketPtr pkt) override;
         void recvRespRetry() override;
     };
 
@@ -96,21 +98,11 @@ class CXLMemCtrl : public ClockedObject
 
         MemCtrlPort(const std::string& name, CXLMemCtrl& _ctrl);
 
-        /**
-         * Get a list of the non-overlapping address ranges the owner is
-         * responsible for. All response ports must override this function
-         * and return a populated list with at least one item.
-         *
-         * @return a list of ranges responded to
-         */
-        AddrRangeList getAddrRanges() const override;
-
         // // retry the response if blocked
         // bool retryResp;
       protected:
 
         void recvReqRetry() override;
-        void sendTimingReq(pkt) override;
         bool recvTimingResp(PacketPtr pkt) override;
         void recvRangeChange() override;
     };
@@ -125,11 +117,6 @@ class CXLMemCtrl : public ClockedObject
     virtual void processResponseEvent();
     EventFunctionWrapper respEvent;
 
-    /**
-     * Used for debugging to observe the contents of the queues.
-     */
-    void printQs() const;
-
     /** Calculate the average latency */
     void calculateAvgLatency();
 
@@ -143,17 +130,12 @@ class CXLMemCtrl : public ClockedObject
 
       void regStats() override;
 
-      CXLMemCtrl &cxlmc;
+      const CXLMemCtrl &cxlmc;
 
       // Overall statistics
       statistics::Scalar totalLatency;
       statistics::Formula avgLatency;
       statistics::Histogram latencyHistogram;
-
-      // Per-requestor statistics
-      statistics::Vector perRequestorLatency;
-      statistics::Vector perRequestorAccesses;
-      statistics::Formula perRequestorAvgLatency;
     };
 
 
@@ -165,8 +147,14 @@ class CXLMemCtrl : public ClockedObject
     /** Handle Response */
     bool handleResponse(PacketPtr pkt);
 
-    /** Provide address ranges */
-    AddrRangeList getAddrRanges() const;
+    /**
+     * Get a list of the non-overlapping address ranges the owner is
+     * responsible for. All response ports must override this function
+     * and return a populated list with at least one item.
+     *
+     * @return a list of ranges responded to
+     */
+    virtual AddrRangeList getAddrRanges();
 
     bool reqQEmpty()
     {
@@ -193,6 +181,8 @@ class CXLMemCtrl : public ClockedObject
     // True if this is currently blocked waiting for a response.
     bool blocked;
 
+    // System* _system;
+
   public:
     uint32_t requestQueueSize;
     uint32_t responseQueueSize;
@@ -200,6 +190,8 @@ class CXLMemCtrl : public ClockedObject
     std::deque<PacketPtr> respQueue;
     /** Resp queue */ 
     std::deque<PacketPtr> reqQueue;
+
+    // System* system() const { return _system; }
 
     CXLMemCtrl(const CXLMemCtrlParams &p);
     virtual void init() override;

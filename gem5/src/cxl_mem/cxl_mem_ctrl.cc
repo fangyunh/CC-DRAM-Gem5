@@ -70,10 +70,10 @@ CXLMemCtrl::handleRequest(PacketPtr pkt)
     packetLatency[pkt->id] = curTick();
     
     // Calc avg gap between requests
-    if (prevArrival != 0) {
-        stats.totGap += curTick() - prevArrival;
-    }
-    prevArrival = curTick();
+    // if (prevArrival != 0) {
+    //     stats.totGap += curTick() - prevArrival;
+    // }
+    // prevArrival = curTick();
 
     // Store initial tick of packet
     if (reqQueueFull()) {
@@ -103,17 +103,12 @@ CXLMemCtrl::handleResponse(PacketPtr pkt)
         Tick latency = curTick() - it->second;
         stats.totalLatency += latency;
         stats.latencyHistogram.sample(latency);
-
-        int requestorID = pkt->req->requestorId();
-        stats.perRequestorLatency[requestorID] += latency;
-        stats.perRequestorAccesses[requestorID]++;
         
         packetLatency.erase(it);
     }
 
     if (respQueueFull()) {
         DPRINTF(CXLMemCtrl, "Response queue full, cannot accept packet\n");
-        needRetry = true;
         return false;
     }
 
@@ -196,12 +191,12 @@ CXLMemCtrl::processResponseEvent()
 }
 
 AddrRangeList
-CXLMemCtrl::getAddrRanges() const
+CXLMemCtrl::getAddrRanges()
 {
     // Obtain address ranges from the memory controller
     AddrRangeList ranges;
-    if (mem_ctrl_side_port.isConnected()) {
-        ranges = mem_ctrl_side_port.getAddrRanges();
+    if (memctrl_side_port.isConnected()) {
+        ranges.push_back(memctrl_side_port.getAddrRanges());
     }
     return ranges;
 }
@@ -225,29 +220,11 @@ CXLMemCtrl::respQueueFull() const
 }
 
 void
-CXLMemCtrl::printQs() const
-{
-#if TRACING_ON
-    DPRINTF(CXLMemCtrl, "Request Queue:\n");
-    for (const auto& pkt : reqQueue) {
-        DPRINTF(CXLMemCtrl, "  Request: %s addr %#x size %d\n",
-                pkt->pkt->cmdString(), pkt->pkt->getAddr(), pkt->pkt->getSize());
-    }
-
-    DPRINTF(CXLMemCtrl, "Response Queue:\n");
-    for (const auto& pkt : respQueue) {
-        DPRINTF(CXLMemCtrl, "  Response: %s addr %#x size %d\n",
-                pkt->pkt->cmdString(), pkt->pkt->getAddr(), pkt->pkt->getSize());
-    }
-#endif // TRACING_ON
-}
-
-void
 CXLMemCtrl::calculateAvgLatency()
 {
     // This method can be used to calculate average latency over time
-    if (stats.latencyHistogram.sampleCount() > 0) {
-        stats.avgLatency = stats.totalLatency / stats.latencyHistogram.sampleCount();
+    if (stats.latencyHistogram.size() > 0) {
+        stats.avgLatency = stats.totalLatency / stats.latencyHistogram.size();
     } else {
         stats.avgLatency = 0;
     }
@@ -257,30 +234,24 @@ CXLMemCtrl::CXLStats::
 CXLStats(CXLMemCtrl &_cxlmc)
     : statistics::Group(&_cxlmc),
       cxlmc(_cxlmc),
+
       ADD_STAT(totalLatency, statistics::units::Tick::get(),
                "Total latency of all packets"),
       ADD_STAT(avgLatency, statistics::units::Rate<
                     statistics::units::Tick, statistics::units::Count>::get(),
                "Average latency per packet"),
       ADD_STAT(latencyHistogram, statistics::units::Tick::get(),
-               "Latency histogram"),
-      ADD_STAT(perRequestorLatency, statistics::units::Tick::get(),
-               "Total latency per requestor"),
-      ADD_STAT(perRequestorAccesses, statistics::units::Count::get(),
-               "Number of accesses per requestor"),
-      ADD_STAT(perRequestorAvgLatency, statistics::units::Rate<
-                    statistics::units::Tick, statistics::units::Count>::get(),
-               "Average latency per requestor")
+               "Latency histogram")
 { }
 
 void
-CXLStats::regStats()
+CXLMemCtrl::CXLStats::regStats()
 {
     using namespace statistics;
 
     // Ensure system pointer is valid
-    assert(cxlmc.system());
-    const auto max_requestors = cxlmc.system()->maxRequestors();
+    //System* system = cxlmc._system();
+    //const auto max_requestors = cxlmc.system()->maxRequestors();
 
     // Configure totalLatency
     totalLatency
@@ -299,33 +270,6 @@ CXLStats::regStats()
         .flags(nozero | nonan)
         ;
 
-    // Initialize per-requestor statistics
-    perRequestorLatency
-        .init(max_requestors)
-        .flags(nozero | nonan)
-        ;
-
-    perRequestorAccesses
-        .init(max_requestors)
-        .flags(nozero)
-        ;
-
-    perRequestorAvgLatency
-        .flags(nonan)
-        .precision(2)
-        ;
-
-    // Set subnames for per-requestor statistics
-    for (int i = 0; i < max_requestors; i++) {
-        const std::string requestor = cxlmc.system()->getRequestorName(i);
-        perRequestorLatency.subname(i, requestor);
-        perRequestorAccesses.subname(i, requestor);
-        perRequestorAvgLatency.subname(i, requestor);
-    }
-
-    // Define formula statistics
-    avgLatency = totalLatency / perRequestorAccesses.sum();
-    perRequestorAvgLatency = perRequestorLatency / perRequestorAccesses;
 }
 
 
@@ -334,6 +278,17 @@ CPUPort(const std::string& name, CXLMemCtrl& _ctrl)
     : ResponsePort(name), needRetry(false), blockedPacket(nullptr),
       ctrl(_ctrl)
 { }
+
+Tick 
+CXLMemCtrl::CPUPort::recvAtomic(PacketPtr pkt) {
+    DPRINTF(CXLMemCtrl, "recvAtomic called but not implemented\n");
+    return 0;
+}
+
+void 
+CXLMemCtrl::CPUPort::recvFunctional(PacketPtr pkt) {
+    DPRINTF(CXLMemCtrl, "recvFunctional called but not implemented\n");
+}
 
 bool
 CXLMemCtrl::CPUPort::recvTimingReq(PacketPtr pkt)
