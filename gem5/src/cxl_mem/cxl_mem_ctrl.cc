@@ -139,7 +139,7 @@ CXLMemCtrl::recvReqRetry() {
         memctrl_side_port.needRetry = false;
 
         if (!reqEvent.scheduled()) {
-            schedule(respEvent, curTick());
+            schedule(reqEvent, curTick());
         }
     }
 }
@@ -170,6 +170,7 @@ CXLMemCtrl::processRequestEvent()
         if (!memctrl_side_port.sendTimingReq(pkt)) {
             DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
             // Will retry when recvReqRetry is called
+            memctrl_side_port.needRetry = true;
             // memctrl_side_port.blockedPacket = pkt;
             break;
         }
@@ -321,7 +322,7 @@ CXLMemCtrl::CPUPort::recvFunctional(PacketPtr pkt) {
 bool
 CXLMemCtrl::CPUPort::recvTimingReq(PacketPtr pkt)
 {
-    // Just forward to the cxlmemctrl.
+    // Just forward to the memctrl.
     if (!ctrl.handleRequest(pkt)) {
         needRetry = true;
         return false;
