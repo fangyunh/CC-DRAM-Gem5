@@ -108,6 +108,7 @@ CXLMemCtrl::handleResponse(PacketPtr pkt)
     if (it != packetLatency.end()) {
         Tick latency = curTick() - it->second;
         stats.totalLatency += latency;
+        stats.totalNumberofPackets++;
         stats.latencyHistogram.sample(latency);
         
         packetLatency.erase(it);
@@ -265,6 +266,8 @@ CXLStats(CXLMemCtrl &_cxlmc)
 
     ADD_STAT(totalLatency, statistics::units::Tick::get(),
             "Total latency of all packets"),
+    ADD_STAT(totalNumberofPackets, statistics::units::Count::get(),
+            "Total number of packets"),
     ADD_STAT(latencyHistogram, statistics::units::Tick::get(),
             "Latency histogram"),
     ADD_STAT(avgLatency, statistics::units::Rate<
@@ -278,10 +281,6 @@ CXLMemCtrl::CXLStats::regStats()
     using namespace statistics;
     //statistics::Group::regStats();
 
-    // Ensure system pointer is valid
-    //System* system = cxlmc._system();
-    //const auto max_requestors = cxlmc.system()->maxRequestors();
-
     // Configure totalLatency
     totalLatency
         .flags(nozero | nonan)
@@ -294,12 +293,11 @@ CXLMemCtrl::CXLStats::regStats()
         ;
 
     // Configure avgLatency
-    avgLatency.precision(8);
+    avgLatency.precision(4);
 
-    avgLatency = (totalLatency) / latencyHistogram.size();
+    avgLatency = totalLatency / totalNumberofPackets;
 
 }
-
 
 CXLMemCtrl::CPUPort::
 CPUPort(const std::string& name, CXLMemCtrl& _ctrl)

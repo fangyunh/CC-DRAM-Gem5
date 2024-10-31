@@ -146,8 +146,9 @@ class CXLMemCtrl : public ClockedObject
 
       // Overall statistics
       statistics::Scalar totalLatency;
-      statistics::Formula avgLatency;
+      statistics::Scalar totalNumberofPackets;
       statistics::Histogram latencyHistogram;
+      statistics::Formula avgLatency;
     };
 
 
@@ -190,8 +191,6 @@ class CXLMemCtrl : public ClockedObject
     void sendRangeChange();
 
     Tick prevArrival;
-    // True if this is currently blocked waiting for a response.
-    bool blocked;
 
     // delay of retry
     const Cycles delay;
