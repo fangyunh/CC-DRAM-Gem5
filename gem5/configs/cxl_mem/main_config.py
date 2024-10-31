@@ -9,13 +9,18 @@ system.clk_domain = SrcClockDomain()
 system.clk_domain.clock = '1GHz'
 system.clk_domain.voltage_domain = VoltageDomain()
 
-# Memory configuration
-system.mem_mode = 'timing'
-total_memory = '4GB'
-num_channels = 4  # Number of DRAM channels
-per_channel_mem = '1GB'
+# Set up the system (single)
+system.mem_mode = "timing"  # Use timing accesses
+system.mem_ranges = [AddrRange("512MB")]  # Create an address range
 
-system.mem_ranges = [AddrRange(per_channel_mem) for _ in range(num_channels)]
+# Memory configuration
+# system.mem_mode = 'timing'
+# total_memory = '32GiB'
+# num_channels = 4  # Number of DRAM channels
+# per_channel_mem = '8GiB'
+
+# # Create separate memory ranges for each channel
+# system.mem_ranges = [AddrRange(start=Addr('8GiB') * i, size=per_channel_mem) for i in range(num_channels)]
 
 # Instantiate the CPU
 system.cpu = X86TimingSimpleCPU()
@@ -51,14 +56,21 @@ system.cpu.interrupts[0].pio = system.membus.mem_side_ports
 system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
 system.cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 
-# Instantiate multiple DDR4 memory controllers for each channel
-system.mem_ctrls = []
-for i in range(num_channels):
-    mem_ctrl = MemCtrl()
-    mem_ctrl.dram = DDR4_2400_8x8()
-    mem_ctrl.dram.range = system.mem_ranges[i]
-    mem_ctrl.port = system.membus.mem_side_ports
-    system.mem_ctrls.append(mem_ctrl)
+# single channel
+system.mem_ctrl = MemCtrl()
+system.mem_ctrl.dram = DDR3_1600_8x8()
+system.mem_ctrl.dram.range = system.mem_ranges[0]
+system.mem_ctrl.port = system.membus.mem_side_ports
+
+# Instantiate and add each DDR4 memory controller individually
+# for i in range(num_channels):
+#     mem_ctrl = MemCtrl()
+#     mem_ctrl.dram = DDR3_1600_8x8()
+#     mem_ctrl.dram.range = system.mem_ranges[i]
+#     mem_ctrl.port = system.membus.mem_side_ports
+    
+#     # Assign each memory controller to a unique attribute in the system
+#     setattr(system, f"mem_ctrl{i}", mem_ctrl)
 
 # Connect the system up to the memory bus
 system.system_port = system.membus.cpu_side_ports
@@ -69,7 +81,7 @@ process = Process()
 # grab the specific path to the binary
 thispath = os.path.dirname(os.path.realpath(__file__))
 binpath = os.path.join(
-    thispath, "../../../", "tests/test-progs/hello/bin/x86/linux/hello"
+    thispath, "../../", "tests/test-progs/hello/bin/x86/linux/hello"
 )
 # cmd is a list which begins with the executable (like argv)
 process.cmd = [binpath]

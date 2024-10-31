@@ -9,8 +9,6 @@
 namespace gem5
 {
 
-namespace memory
-{
 
 // Constructor
 CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
@@ -22,6 +20,7 @@ CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
     requestQueueSize(p.request_buffer_size),
     responseQueueSize(p.response_buffer_size),
     prevArrival(0),
+    delay(p.delay),
     stats(*this)
 {
     DPRINTF(CXLMemCtrl, "Setting up CXL Memory Controller\n");
@@ -66,8 +65,6 @@ CXLMemCtrl::handleRequest(PacketPtr pkt)
 
     panic_if(!(pkt->isRead() || pkt->isWrite()),
              "Should only see read and writes at memory controller\n");
-
-    packetLatency[pkt->id] = curTick();
     
     // Calc avg gap between requests
     // if (prevArrival != 0) {
@@ -78,8 +75,11 @@ CXLMemCtrl::handleRequest(PacketPtr pkt)
     // Store initial tick of packet
     if (reqQueueFull()) {
         DPRINTF(CXLMemCtrl, "Request queue full, not accepting\n");
+        cpu_side_port.needResend = true;
         return false;
     }
+
+    packetLatency[pkt->id] = curTick();
 
     reqQueue.push_back(pkt);
 
@@ -97,7 +97,13 @@ CXLMemCtrl::handleResponse(PacketPtr pkt)
 {
     DPRINTF(CXLMemCtrl, "Received timing response: %s addr %#x size %d\n",
             pkt->cmdString(), pkt->getAddr(), pkt->getSize());
-    
+
+    if (respQueueFull()) {
+        DPRINTF(CXLMemCtrl, "Response queue full, cannot accept packet\n");
+        memctrl_side_port.needResend = true;
+        return false;
+    }
+
     auto it = packetLatency.find(pkt->id);
     if (it != packetLatency.end()) {
         Tick latency = curTick() - it->second;
@@ -105,11 +111,6 @@ CXLMemCtrl::handleResponse(PacketPtr pkt)
         stats.latencyHistogram.sample(latency);
         
         packetLatency.erase(it);
-    }
-
-    if (respQueueFull()) {
-        DPRINTF(CXLMemCtrl, "Response queue full, cannot accept packet\n");
-        return false;
     }
 
     respQueue.push_back(pkt);
@@ -126,6 +127,38 @@ CXLMemCtrl::handleResponse(PacketPtr pkt)
     return true;
 }
 
+void
+CXLMemCtrl::handleFunctional(PacketPtr pkt)
+{
+    memctrl_side_port.sendFunctional(pkt);
+}
+
+void
+CXLMemCtrl::recvReqRetry() {
+    if (memctrl_side_port.needRetry) {
+        memctrl_side_port.needRetry = false;
+
+        if (!reqEvent.scheduled()) {
+            schedule(respEvent, curTick());
+        }
+    }
+}
+
+void
+CXLMemCtrl::recvRespRetry() {
+    // If ther is still have blocked packet
+    // The blocked packet will always keep in the front of the queue
+    // if (needRetry && blockedPacket != nullptr) {
+    if (cpu_side_port.needRetry) {
+        cpu_side_port.needRetry = false;
+
+        if (!respEvent.scheduled()) {
+            schedule(respEvent, curTick());
+        }
+        
+    }
+}
+
 // Send request to memory controller
 void
 CXLMemCtrl::processRequestEvent()
@@ -133,18 +166,11 @@ CXLMemCtrl::processRequestEvent()
     while (!reqQueue.empty()) {
         PacketPtr pkt = reqQueue.front();
 
-        // last blocked packet will try again
-        if (memctrl_side_port.blockedPacket != nullptr && pkt == memctrl_side_port.blockedPacket) {
-            memctrl_side_port.needRetry = false;
-            memctrl_side_port.blockedPacket = nullptr;
-        }
-
         // Try to send the response back to the CPU
         if (!memctrl_side_port.sendTimingReq(pkt)) {
             DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
             // Will retry when recvReqRetry is called
-            memctrl_side_port.blockedPacket = pkt;
-            memctrl_side_port.needRetry = true;
+            // memctrl_side_port.blockedPacket = pkt;
             break;
         }
 
@@ -152,10 +178,16 @@ CXLMemCtrl::processRequestEvent()
         reqQueue.pop_front();
     }
 
-    // If there are still packets in the queue, schedule the event again
-    if (!reqQueue.empty() && !reqEvent.scheduled()) {
-        schedule(reqEvent, clockEdge(Cycles(1)));
+    // Request queue is free to accept previous failed packets
+    if (!reqQueueFull() && cpu_side_port.needResend) {
+        cpu_side_port.needResend = false;
+        cpu_side_port.sendRetryReq();
     }
+
+    // If there are still packets in the queue, schedule the event again
+    // if (!reqQueue.empty() && !reqEvent.scheduled()) {
+    //     schedule(reqEvent, clockEdge(Cycles(1)));
+    // }
 }
 
 // Send response back to CPU
@@ -165,18 +197,12 @@ CXLMemCtrl::processResponseEvent()
     while (!respQueue.empty()) {
         PacketPtr pkt = respQueue.front();
 
-        // last blocked packet will try again
-        if (cpu_side_port.blockedPacket != nullptr && pkt == cpu_side_port.blockedPacket) {
-            cpu_side_port.needRetry = false;
-            cpu_side_port.blockedPacket = nullptr;
-        }        
-
         // Try to send the packet to the memory controller
         if (!cpu_side_port.sendTimingResp(pkt)) {
             DPRINTF(CXLMemCtrl, "CPU cannot accept response, will retry\n");
-            // Retry the packet
+            // Retry the to send packet
             cpu_side_port.needRetry = true;
-            cpu_side_port.blockedPacket = pkt;
+            // cpu_side_port.blockedPacket = pkt;
             break;
         }
 
@@ -184,9 +210,10 @@ CXLMemCtrl::processResponseEvent()
         respQueue.pop_front();
     }
 
-    // If there are still packets in the queue, schedule the event again
-    if (!respQueue.empty() && !respEvent.scheduled()) {
-        schedule(respEvent, clockEdge(Cycles(1)));
+    // Response queue is free to accept previous failed packets
+    if (!respQueueFull() && memctrl_side_port.needResend) {
+        memctrl_side_port.needResend = false;
+        memctrl_side_port.sendRetryResp();
     }
 }
 
@@ -219,35 +246,36 @@ CXLMemCtrl::respQueueFull() const
     return respQueue.size() >= responseQueueSize; 
 }
 
-void
-CXLMemCtrl::calculateAvgLatency()
-{
-    // This method can be used to calculate average latency over time
-    if (stats.latencyHistogram.size() > 0) {
-        stats.avgLatency = stats.totalLatency / stats.latencyHistogram.size();
-    } else {
-        stats.avgLatency = 0;
-    }
-}
+// void
+// CXLMemCtrl::calculateAvgLatency()
+// {
+//     // This method can be used to calculate average latency over time
+//     if (stats.latencyHistogram.size() > 0) {
+//         stats.avgLatency = stats.totalLatency / stats.latencyHistogram.size();
+//     } else {
+//         stats.avgLatency = 0;
+//     }
+// }
 
 CXLMemCtrl::CXLStats::
 CXLStats(CXLMemCtrl &_cxlmc)
     : statistics::Group(&_cxlmc),
       cxlmc(_cxlmc),
 
-      ADD_STAT(totalLatency, statistics::units::Tick::get(),
-               "Total latency of all packets"),
-      ADD_STAT(avgLatency, statistics::units::Rate<
-                    statistics::units::Tick, statistics::units::Count>::get(),
-               "Average latency per packet"),
-      ADD_STAT(latencyHistogram, statistics::units::Tick::get(),
-               "Latency histogram")
+    ADD_STAT(totalLatency, statistics::units::Tick::get(),
+            "Total latency of all packets"),
+    ADD_STAT(latencyHistogram, statistics::units::Tick::get(),
+            "Latency histogram"),
+    ADD_STAT(avgLatency, statistics::units::Rate<
+                statistics::units::Tick, statistics::units::Count>::get(),
+            "Average latency per packet")
 { }
 
 void
 CXLMemCtrl::CXLStats::regStats()
 {
     using namespace statistics;
+    //statistics::Group::regStats();
 
     // Ensure system pointer is valid
     //System* system = cxlmc._system();
@@ -258,24 +286,24 @@ CXLMemCtrl::CXLStats::regStats()
         .flags(nozero | nonan)
         ;
 
-    // Configure avgLatency
-    avgLatency
-        .flags(nozero | nonan)
-        .precision(2)
-        ;
-
     // Configure latencyHistogram
     latencyHistogram
         .init(10)
         .flags(nozero | nonan)
         ;
 
+    // Configure avgLatency
+    avgLatency.precision(8);
+
+    avgLatency = (totalLatency) / latencyHistogram.size();
+
 }
 
 
 CXLMemCtrl::CPUPort::
 CPUPort(const std::string& name, CXLMemCtrl& _ctrl)
-    : ResponsePort(name), needRetry(false), blockedPacket(nullptr),
+    : ResponsePort(name), needRetry(false), 
+      needResend(false), blockedPacket(nullptr),
       ctrl(_ctrl)
 { }
 
@@ -287,7 +315,7 @@ CXLMemCtrl::CPUPort::recvAtomic(PacketPtr pkt) {
 
 void 
 CXLMemCtrl::CPUPort::recvFunctional(PacketPtr pkt) {
-    DPRINTF(CXLMemCtrl, "recvFunctional called but not implemented\n");
+    return ctrl.handleFunctional(pkt);
 }
 
 bool
@@ -311,37 +339,25 @@ CXLMemCtrl::CPUPort::getAddrRanges() const
 void
 CXLMemCtrl::CPUPort::recvRespRetry()
 {
-    // If ther is still have blocked packet
-    // The blocked packet will always keep in the front of the queue
-    if (needRetry && blockedPacket != nullptr) {
-        PacketPtr pkt = blockedPacket;
-
-        if (pkt == ctrl.respQueue.front()) {
-            ctrl.respQueue.pop_front();
-            if (!sendTimingResp(pkt)) {
-                // Failure, re-enqueue it and try again
-                ctrl.respQueue.push_front(pkt);
-            } else {
-                // Success, change states
-                needRetry = false;
-                blockedPacket = nullptr;
-            }
-        }
-    }
-
-    // no need to retry becuase the packet is already sent
+    ctrl.recvRespRetry();
 }
 
 CXLMemCtrl::MemCtrlPort::
 MemCtrlPort(const std::string& name, CXLMemCtrl& _ctrl)
-    : RequestPort(name), needRetry(false), blockedPacket(nullptr),
+    : RequestPort(name), needRetry(false), 
+      needResend(false), blockedPacket(nullptr),
       ctrl(_ctrl)
 { }
 
 bool
 CXLMemCtrl::MemCtrlPort::recvTimingResp(PacketPtr pkt)
 {
-    return ctrl.handleResponse(pkt);
+    if (!ctrl.handleResponse(pkt)) {
+        needRetry = true;
+        return false;
+    } else {
+        return true;
+    }
 }
 
 void
@@ -349,26 +365,26 @@ CXLMemCtrl::MemCtrlPort::recvReqRetry()
 {
     // If ther is still have blocked packet
     // The blocked packet will always keep in the front of the queue
-    if (needRetry && blockedPacket != nullptr) {
-        PacketPtr pkt = blockedPacket;
-        // To avoid send same packets twice
-        if (pkt == ctrl.reqQueue.front()) {
-            ctrl.reqQueue.pop_front();
+    // if (needRetry && blockedPacket != nullptr) {
+    //     PacketPtr pkt = blockedPacket;
+    //     // To avoid send same packets twice
+    //     if (pkt == ctrl.reqQueue.front()) {
+    //         ctrl.reqQueue.pop_front();
 
-            if (!sendTimingReq(pkt)) {
-                // Failure, re-enqueue it and try again
-                ctrl.reqQueue.push_front(pkt);
-            } else {
-                // Success, change states
-                needRetry = false;
-                blockedPacket = nullptr;
-            }
+    //         if (!sendTimingReq(pkt)) {
+    //             // Failure, re-enqueue it and try again
+    //             ctrl.reqQueue.push_front(pkt);
+    //         } else {
+    //             // Success, change states
+    //             needRetry = false;
+    //             blockedPacket = nullptr;
+    //         }
 
-        }
+    //     }
 
-    }
+    // }
 
-    // no need to retry becuase the packet is already sent
+    ctrl.recvReqRetry();
 }
 
 void
@@ -377,5 +393,5 @@ CXLMemCtrl::MemCtrlPort::recvRangeChange()
     ctrl.sendRangeChange();
 }
 
-}   
+
 }

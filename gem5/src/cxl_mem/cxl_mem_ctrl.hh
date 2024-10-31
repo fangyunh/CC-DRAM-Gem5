@@ -34,9 +34,6 @@
 namespace gem5
 {
 
-namespace memory
-{
-
 
 // /** Design a CXL Packet structure to manage packet */
 // class CXLPacket {
@@ -71,6 +68,8 @@ class CXLMemCtrl : public ClockedObject
 
         bool needRetry;
 
+        bool needResend;
+
         CPUPort(const std::string& name, CXLMemCtrl& _ctrl);
 
         AddrRangeList getAddrRanges() const override;
@@ -96,6 +95,8 @@ class CXLMemCtrl : public ClockedObject
 
         bool needRetry;
 
+        bool needResend;
+
         MemCtrlPort(const std::string& name, CXLMemCtrl& _ctrl);
 
         // // retry the response if blocked
@@ -118,7 +119,18 @@ class CXLMemCtrl : public ClockedObject
     EventFunctionWrapper respEvent;
 
     /** Calculate the average latency */
-    void calculateAvgLatency();
+    // void calculateAvgLatency();
+
+    void recvReqRetry();
+    void recvRespRetry();
+
+    /**
+     * Handle a packet functionally. Update the data on a write and get the
+     * data on a read. Called from CPU port on a recv functional.
+     *
+     * @param packet to functionally handle
+     */
+    void handleFunctional(PacketPtr pkt);
 
     /** Store the latency */ 
     std::unordered_map<PacketId, Tick> packetLatency;
@@ -181,6 +193,9 @@ class CXLMemCtrl : public ClockedObject
     // True if this is currently blocked waiting for a response.
     bool blocked;
 
+    // delay of retry
+    const Cycles delay;
+
     // System* _system;
 
   public:
@@ -200,7 +215,6 @@ class CXLMemCtrl : public ClockedObject
     ~CXLMemCtrl() {}
 };
 
-} // namespace memory
 } // namespace gem5
 
 #endif //__CXL_MEM_CTRL_HH__
