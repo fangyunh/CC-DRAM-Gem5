@@ -44,6 +44,11 @@ docker start -ai gem5_v0
 **Compile gem5:**
 scons build/{ISA}/gem5.{variants} -j 12    //ISA includes x86, arm, RISCV;      variants includes opt, debug, fast
 
+**Compile gem5 with Cache Coherence Protocol:**
+scons defconfig build/X86_MSI build_opts/X86
+scons setconfig build/X86_MSI RUBY_PROTOCOL_MSI=y SLICC_HTML=y
+scons build/X86_MSI/gem5.opt
+
 **Clean Compiled file:**
 scons build/{ISA}/gem5.{variants} -c
 
@@ -51,3 +56,6 @@ scons build/{ISA}/gem5.{variants} -c
 ./build/{ISA}/gem5.{variant} [gem5 options] {simulation script} [script options]
 
 e.g build/X86/gem5.opt --debug-flags=CXLMemCtrl configs/cxl_mem/main_config.py | head -n 50
+
+Multicore script run:
+e.g build/X86_MSI/gem5.opt --debug-flags=CXLMemCtrl configs/cxl_mem/multi_core.py  
