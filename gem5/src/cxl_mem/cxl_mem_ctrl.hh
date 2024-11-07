@@ -35,40 +35,37 @@ namespace gem5
 {
 
 
-// /** Design a CXL Packet structure to manage packet */
+/** Design a CXL Packet structure to manage packet */
 // class CXLPacket {
 //   public:
 //     /** When did request enter the controller */
 //     const Tick entryTime;
 
 //     /** When will request leave the controller */
-//     Tick readyTime;
+//     // Tick readyTime;
 
 //     /** This comes from the outside world */
-//     const PacketPtr pkt;
+//     PacketPtr pkt;
 
-//     CXLPacket(PacketPtr _pkt, bool is_read)
-//       : entryTime(curTick()), readyTime(curTick()), pkt(_pkt) { }
+//     bool is_read;
+
+//     CXLPacket(PacketPtr _pkt, bool _is_read)
+//       : entryTime(curTick()), pkt(_pkt), is_read(_is_read) { }
 // };
  
 // typedef std::deque<CXLPacket*> CXLPacketQueue;
- 
+
 
 class CXLMemCtrl : public ClockedObject
 {
   protected:
+    enum BusState { READ, WRITE, EMPTY, START };
     /** Ports */
     class CPUPort: public ResponsePort
     {
       public:
         // The object that owns this object
         CXLMemCtrl& ctrl;
-        // If we tried to send a packet and it was blocked, store it here
-        PacketPtr blockedPacket;
-
-        bool needRetry;
-
-        bool needResend;
 
         CPUPort(const std::string& name, CXLMemCtrl& _ctrl);
 
@@ -93,10 +90,6 @@ class CXLMemCtrl : public ClockedObject
         // If we tried to send a packet and it was blocked, store it here
         PacketPtr blockedPacket;
 
-        bool needRetry;
-
-        bool needResend;
-
         MemCtrlPort(const std::string& name, CXLMemCtrl& _ctrl);
 
         // // retry the response if blocked
@@ -109,6 +102,9 @@ class CXLMemCtrl : public ClockedObject
     };
     
     MemCtrlPort memctrl_side_port;
+
+    virtual bool recvTimingReq(PacketPtr pkt);
+    virtual bool recvTimingResp(PacketPtr pkt);
     
     // send request
     virtual void processRequestEvent();
@@ -117,9 +113,6 @@ class CXLMemCtrl : public ClockedObject
     // send response
     virtual void processResponseEvent();
     EventFunctionWrapper respEvent;
-
-    /** Calculate the average latency */
-    // void calculateAvgLatency();
 
     void recvReqRetry();
     void recvRespRetry();
@@ -134,6 +127,9 @@ class CXLMemCtrl : public ClockedObject
 
     /** Store the latency */ 
     std::unordered_map<PacketId, Tick> packetLatency;
+    /** Records it is a read or write packet */
+    // std::unordered_map<PacketId, bool> packetProperty;
+
 
     /** statistc for latency */
     struct CXLStats : public statistics::Group
@@ -146,19 +142,40 @@ class CXLMemCtrl : public ClockedObject
 
       // Overall statistics
       statistics::Scalar totalLatency;
-      statistics::Scalar totalNumberofPackets;
+      statistics::Scalar totalReadLatency;
+      statistics::Scalar totalWriteLatency;
+      statistics::Scalar totGap;
+
+      statistics::Scalar totalPacketsNum;
+      statistics::Scalar totalReadPacketsNum;
+      statistics::Scalar totalWritePacketsNum;
+      statistics::Scalar totalPacketsSize;
+      statistics::Scalar totalCompressedPacketsNum;
+      statistics::Scalar totalReadPacketsSize;
+      statistics::Scalar totalWritePacketsSize;
+      statistics::Scalar totalCompressedPacketsSize;
+      
+      statistics::Formula avgRdBWSys;
+      statistics::Formula avgWrBWSys;
+
       statistics::Histogram latencyHistogram;
+      statistics::Histogram readLatencyHistogram;
+      statistics::Histogram writeLatencyHistogram;
+
       statistics::Formula avgLatency;
+      statistics::Formula avgReadLatency;
+      statistics::Formula avgWriteLatency;
+      statistics::Formula avgCompressedSize;
     };
 
 
     CXLStats stats;
 
-    /** Handle Request */
-    bool handleRequest(PacketPtr pkt);
+    /** Send respond */
+    void accessAndRespond(PacketPtr pkt, Tick static_latency);
 
-    /** Handle Response */
-    bool handleResponse(PacketPtr pkt);
+    /** Seek required packets in write queue or not */
+    bool findInWriteQueue(PacketPtr pkt);
 
     /**
      * Get a list of the non-overlapping address ranges the owner is
@@ -169,9 +186,14 @@ class CXLMemCtrl : public ClockedObject
      */
     virtual AddrRangeList getAddrRanges();
 
-    bool reqQEmpty()
+    bool readQEmpty()
     {
-        return reqQueue.empty();
+        return readQueue.empty();
+    }
+
+    bool writeQEmpty()
+    {
+        return writeQueue.empty();
     }
 
     bool respQEmpty()
@@ -179,10 +201,13 @@ class CXLMemCtrl : public ClockedObject
         return respQueue.empty();
     }
 
-    /** Check if response queue is full */
-    bool reqQueueFull() const;
+    /** Check if read queue is full */
+    bool readQueueFull() const;
 
-    /** Check if request queue is full */
+    /** Check if write queue is full */
+    bool writeQueueFull() const;
+
+    /** Check if resp queue is full */
     bool respQueueFull() const;
 
     /**
@@ -190,20 +215,75 @@ class CXLMemCtrl : public ClockedObject
      */
     void sendRangeChange();
 
+    /** LZ4 compression */
+    void LZ4Compression();
+
+    /**
+     * Remember if we have to retry a request when available.
+     */
+
+    // retry to receive req
+    bool retryRdReq;
+    bool retryWrReq;
+
+    // Need resend the packet to downside mem ctrl
+    bool resendReq;
+
+    // loss to receive resp from memory ctrl
+    bool resendMemResp;
+
+    // fail to send resp to CPU
+    bool retryMemResp;
+
     Tick prevArrival;
 
-    // delay of retry
-    const Cycles delay;
+    /**
+     * Pipeline latency of the controller frontend. The frontend
+     * contribution is added to writes (that complete when they are in
+     * the write buffer) and reads that are serviced the write buffer.
+     */
+    const Tick frontendLatency;
 
-    // System* _system;
+    /**
+     * Pipeline latency of the backend and PHY. Along with the
+     * frontend contribution, this latency is added to reads serviced
+     * by the memory.
+     */
+    const Tick backendLatency;
+
+    const Tick delay;
+
+    // number of packet to be compressed
+    const unsigned writePktThreshold;
+
+    // state of sending read or write request
+    BusState RWState;
+    BusState nextRWState;
+
+    // number of already compressed packet
+    unsigned cmpedPkt;
+
+    // Timeout to make sure that no read requests generated
+    const unsigned idleTimeOut;
+    
+    // Cycles already goes
+    unsigned idleCycles;
+
+    // Drain state check
+    DrainState drain() override;
+    // Marks that no packets will send by CPU
+    bool goDraining;
 
   public:
-    uint32_t requestQueueSize;
+    uint32_t readQueueSize;
+    uint32_t writeQueueSize;
     uint32_t responseQueueSize;
+
     /** Request queue */
-    std::deque<PacketPtr> respQueue;
+    std::deque<PacketPtr> readQueue;
+    std::deque<PacketPtr> writeQueue;
     /** Resp queue */ 
-    std::deque<PacketPtr> reqQueue;
+    std::deque<PacketPtr> respQueue;
 
     // System* system() const { return _system; }
 

@@ -15,11 +15,25 @@ class CXLMemCtrl(ClockedObject):
     memctrl_side_port = RequestPort("Ports connected to MemCtrls")
 
     # Buffer size of read and write queue
-    request_buffer_size = Param.Unsigned(32, "Request queue size")
-    response_buffer_size = Param.Unsigned(32, "Response queue size")
+    read_buffer_size = Param.Unsigned(64, "Read Request queue size")
+    write_buffer_size = Param.Unsigned(128, "Write Request queue size")
+    response_buffer_size = Param.Unsigned(64, "Response queue size")
 
-    # delay of retry
-    delay = Param.Cycles(1, "Cycles taken on a retry")
+    # Number of write packets to be compressed
+    # default 16 means 16 * 4 * 64B = 4KB
+    write_pkt_threshold = Param.Unsigned(64, "Number of write packets to be compressed")
 
+    # pipeline latency of the controller and PHY, split into a
+    # frontend part and a backend part, with reads and writes serviced
+    # by the queues only seeing the frontend contribution, and reads
+    # serviced by the memory seeing the sum of the two
+    static_frontend_latency = Param.Latency("8ns", "Static frontend latency")
+    static_backend_latency = Param.Latency("8ns", "Static backend latency")
 
+    # Setted Timeout cycle to make sure that no requests generated
+    # Then we can process remaining write packets in queue
+    idle_time_out = Param.Unsigned(20, "Number of cycles to ensure that no read requests emerge")
+
+    # delay for recheck the queues
+    delay = Param.Latency("6ns", "Static delay of waiting read queue")
     

@@ -1,5 +1,8 @@
 Import('*')
 
+env.Append(LIBPATH=['lz4'])
+env.Append(LIBS=['lz4'])
+
 SimObject('CXLMemCtrl.py', sim_objects=['CXLMemCtrl'])
 
 Source('cxl_mem_ctrl.cc')
