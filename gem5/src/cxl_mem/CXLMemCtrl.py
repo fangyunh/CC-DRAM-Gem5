@@ -30,10 +30,6 @@ class CXLMemCtrl(ClockedObject):
     static_frontend_latency = Param.Latency("8ns", "Static frontend latency")
     static_backend_latency = Param.Latency("8ns", "Static backend latency")
 
-    # Setted Timeout cycle to make sure that no requests generated
-    # Then we can process remaining write packets in queue
-    idle_time_out = Param.Unsigned(20, "Number of cycles to ensure that no read requests emerge")
-
     # delay for recheck the queues
     delay = Param.Latency("6ns", "Static delay of waiting read queue")
     

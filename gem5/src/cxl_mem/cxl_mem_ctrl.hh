@@ -59,7 +59,7 @@ namespace gem5
 class CXLMemCtrl : public ClockedObject
 {
   protected:
-    enum BusState { READ, WRITE, EMPTY, START };
+    enum BusState { START, READ, WRITE };
     /** Ports */
     class CPUPort: public ResponsePort
     {
@@ -262,12 +262,6 @@ class CXLMemCtrl : public ClockedObject
 
     // number of already compressed packet
     unsigned cmpedPkt;
-
-    // Timeout to make sure that no read requests generated
-    const unsigned idleTimeOut;
-    
-    // Cycles already goes
-    unsigned idleCycles;
 
     // Drain state check
     DrainState drain() override;

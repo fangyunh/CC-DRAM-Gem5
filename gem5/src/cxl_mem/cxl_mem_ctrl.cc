@@ -25,7 +25,6 @@ CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
     readQueueSize(p.read_buffer_size),
     writeQueueSize(p.write_buffer_size),
     responseQueueSize(p.response_buffer_size),
-    idleTimeOut(p.idle_time_out),
     prevArrival(0),
     delay(p.delay),
     writePktThreshold(p.write_pkt_threshold),
@@ -36,8 +35,6 @@ CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
     DPRINTF(CXLMemCtrl, "Setting up CXL Memory Controller\n");
     RWState = READ;    // current state
     nextRWState = START;
-
-    idleCycles = 0;
 
     // retry to receive req
     retryRdReq = false;
@@ -160,8 +157,10 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
             // Respond the write request
             accessAndRespond(pkt, frontendLatency);
 
-            if (!reqEvent.scheduled()) {
-                DPRINTF(CXLMemCtrl, "Request scheduled immediately\n");
+            if (!reqEvent.scheduled() && 
+                ((drainState() == DrainState::Draining && !writeQEmpty()) ||
+                writeQueue.size() > writePktThreshold)) {
+                DPRINTF(CXLMemCtrl, " write Request scheduled immediately\n");
                 schedule(reqEvent, curTick());
             }
         }
@@ -332,21 +331,20 @@ CXLMemCtrl::processRequestEvent()
 
     // Initialize the nextRWState
     if (nextRWState == START) {
-        if (!readQEmpty()) {
+        if ((drainState() == DrainState::Draining && !writeQEmpty()) ||
+            writeQueue.size() >= writePktThreshold)
+        {
+            nextRWState = WRITE;
+        } else if (!readQEmpty()) {
             nextRWState = READ;
         } else {
-            nextRWState = EMPTY;
+            nextRWState = START;
+            return;
         }
-    }
-
-    // reset cycles
-    if (nextRWState == READ || nextRWState==WRITE) {
-        idleCycles = 0;
     }
 
     // wait for read request until time out
     DPRINTF(CXLMemCtrl, "The state need to process is %d\n", nextRWState);
-    DPRINTF(CXLMemCtrl, "Current idle cycle: %d\n", idleCycles);
     DPRINTF(CXLMemCtrl, "Read queue size: %d, Write queue size: %d\n", readQueue.size(), writeQueue.size());
     if (nextRWState == READ) {
         PacketPtr pkt = readQueue.front();
@@ -367,73 +365,65 @@ CXLMemCtrl::processRequestEvent()
         // If write queue size overflow the threshold, execute write req in the next
         // Else read queue is empty, we wait for couple cycles
         // When timed out, we execute remaining write packets
-        if (writeQueue.size() > writePktThreshold) {
+        if ((drainState() == DrainState::Draining && !writeQEmpty()) ||
+            writeQueue.size() > writePktThreshold) {
             nextRWState = WRITE;
         } else {
             if (readQEmpty()) {
-                nextRWState = EMPTY;
-                idleCycles++;
+                nextRWState = START;
             } else {
                 nextRWState = READ;
             }
         }
 
-    } else if (nextRWState == WRITE) {
+    } else {
+        assert(nextRWState == WRITE);
         if (nextRWState != RWState) {
             // If it is first time to write, compress the data
             LZ4Compression();
         }
 
-        // increment compressed packets number
-        stats.totalCompressedPacketsNum += 1;
-
-        // update this state of processed req
+        // Update the state to WRITE
         RWState = WRITE;
 
-        // process write
-        PacketPtr pkt = writeQueue.front();
-        // Try to send the packet to mem ctrl
-        if (!memctrl_side_port.sendTimingReq(pkt)) {
-            DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
-            // Will retry when recvReqRetry is called
-            resendReq = true;
-            nextRWState = WRITE;
-            return;
-        }
-        DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
+        
+        while (cmpedPkt < writePktThreshold && !writeQEmpty()) {
+            PacketPtr pkt = writeQueue.front();
+            // Try to send the packet to mem ctrl
+            if (!memctrl_side_port.sendTimingReq(pkt)) {
+                DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
+                // Will retry when recvReqRetry is called
+                resendReq = true;
+                nextRWState = WRITE;
+                return;
+            }
+            DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
 
-        // **Record write latency here**
-        auto it = packetLatency.find(pkt->id);
-        if (it != packetLatency.end()) {
-            Tick latency = curTick() - it->second;
-            stats.totalWriteLatency += latency;
-            stats.writeLatencyHistogram.sample(latency);
-            stats.totalLatency += latency;
-            stats.latencyHistogram.sample(latency);
-            packetLatency.erase(it);
-        }
+            // **Record write latency here**
+            auto it = packetLatency.find(pkt->id);
+            if (it != packetLatency.end()) {
+                Tick latency = curTick() - it->second;
+                stats.totalWriteLatency += latency;
+                stats.writeLatencyHistogram.sample(latency);
+                stats.totalLatency += latency;
+                stats.latencyHistogram.sample(latency);
+                packetLatency.erase(it);
+            }
 
-        cmpedPkt++; // increment compressed pkt num
-        writeQueue.pop_front();
+            writeQueue.pop_front();
+            // Increment compressed packets number
+            stats.totalCompressedPacketsNum += 1;
+            cmpedPkt++; // increment compressed pkt num
+        }
 
         // Identify next state
-        if (cmpedPkt > writePktThreshold || writeQEmpty()) {
+        if (cmpedPkt >= writePktThreshold || writeQEmpty()) {
             nextRWState = START;
             cmpedPkt = 0;
         } else {
             nextRWState = WRITE;
         }
 
-    } else {
-        RWState = EMPTY;
-        if (idleCycles > idleTimeOut) {
-            nextRWState = WRITE;
-        } else if (!readQEmpty()) {
-            nextRWState = READ;
-        } else {
-            nextRWState = EMPTY;
-            idleCycles++;
-        }
     }
 
     if (!reqEvent.scheduled() && (!(writeQEmpty() && readQEmpty()))) {
@@ -445,12 +435,14 @@ CXLMemCtrl::processRequestEvent()
     if ((retryWrReq  && !writeQueueFull())) {
         retryWrReq = false;
         cpu_side_port.sendRetryReq();
-    } else if ((retryRdReq && !readQueueFull())) {
+    } 
+    
+    if ((retryRdReq && !readQueueFull())) {
         retryRdReq = false;
         cpu_side_port.sendRetryReq();
     }
 
-    if (drainState() == DrainState::Draining && writeQEmpty() && readQEmpty()) {
+    if (drainState() == DrainState::Draining && writeQEmpty() && readQEmpty() && respQEmpty()) {
         signalDrainDone();
     }
 
@@ -505,7 +497,7 @@ CXLMemCtrl::processResponseEvent()
     }
 
     // After processing, check if we're draining and response queue is empty
-    if (drainState() == DrainState::Draining && respQEmpty()) {
+    if (drainState() == DrainState::Draining && writeQEmpty() && readQEmpty() && respQEmpty()) {
         signalDrainDone();
     }
 }

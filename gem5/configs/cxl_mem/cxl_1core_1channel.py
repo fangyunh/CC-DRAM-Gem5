@@ -85,6 +85,6 @@ exit_event = m5.simulate()
 # Finish the simulation and print the exit cause
 print('Exiting @ tick {} because {}'.format(m5.curTick(), exit_event.getCause()))
 
-drain_event = m5.drain()
-print("Draining simulation state")
+# drain_event = m5.drain()
+# print("Draining simulation state")
 # execute_event = m5.simulate()
