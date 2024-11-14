@@ -67,9 +67,10 @@ class CXLMemCtrl : public ClockedObject
   protected:
     enum BusState { START, READ, WRITE };
     /** Ports */
-    class CPUPort: public ResponsePort
+    class CPUPort: public QueuedResponsePort
     {
       public:
+        RespPacketQueue queue;
         // The object that owns this object
         CXLMemCtrl& ctrl;
 

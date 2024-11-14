@@ -274,21 +274,30 @@ void
 CXLMemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency)
 {
     DPRINTF(CXLMemCtrl, "Responding to Address %#x.. \n", pkt->getAddr());
-    bool needsResponse = pkt->needsResponse();
 
+    // send response pkt back to cpu
+    if (pkt->isResponse()) {
+        Tick response_time = curTick() + static_latency;
+        cpu_side_port.schedTimingResp(pkt, response_time);
+        return;
+    }
+
+    // Mainly for write packets response
+    bool needsResponse = pkt->needsResponse();
 
     if (needsResponse) {
         pkt->makeResponse();
-        assert(pkt->isResponse());
-
-        DPRINTF(CXLMemCtrl, "Test if pkt data can be accessed\n");
-        const uint8_t* data = pkt->getConstPtr<uint8_t>();
-        unsigned size = pkt->getSize();
 
         Tick response_time = curTick() + static_latency;
 
-        // Currently does not set latency
-        cpu_side_port.sendTimingResp(pkt);
+        // if (!cpu_side_port.sendTimingResp(pkt)) {
+        //     DPRINTF(CXLMemCtrl, "CPU cannot accept response, will retry\n");
+        //     // Retry the to send packet
+        //     retryMemResp = true;
+        //     return;
+        // }
+        cpu_side_port.schedTimingResp(pkt, response_time);
+
     } else {
         DPRINTF(CXLMemCtrl, "No need to respond\n");
     }
@@ -374,6 +383,10 @@ CXLMemCtrl::processRequestEvent()
     DPRINTF(CXLMemCtrl, "Read queue size: %d, Write queue size: %d\n", readQueue.size(), writeQueue.size());
     if (nextRWState == READ) {
         PacketPtr pkt = readQueue.front();
+
+        // Read compressed data block
+
+
         // Try to send request to downside memory controller
         if (!memctrl_side_port.sendTimingReq(pkt)) {
             DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
@@ -500,12 +513,7 @@ CXLMemCtrl::processResponseEvent()
     }
 
     // Try to send the packet to the memory controller
-    if (!cpu_side_port.sendTimingResp(pkt)) {
-        DPRINTF(CXLMemCtrl, "CPU cannot accept response, will retry\n");
-        // Retry the to send packet
-        retryMemResp = true;
-        return;
-    }
+    accessAndRespond(pkt, frontendLatency + backendLatency);
 
     DPRINTF(CXLMemCtrl, "Sent response back to CPU\n");
     respQueue.pop_front();
@@ -721,7 +729,7 @@ CXLMemCtrl::CXLStats::regStats()
 
 CXLMemCtrl::CPUPort::
 CPUPort(const std::string& name, CXLMemCtrl& _ctrl)
-    : ResponsePort(name), ctrl(_ctrl)
+    : QueuedResponsePort(name, queue), queue(_ctrl, *this, true), ctrl(_ctrl)
 { }
 
 Tick 
@@ -776,6 +784,7 @@ CXLMemCtrl::MemCtrlPort::recvRangeChange()
 {
     ctrl.sendRangeChange();
 }
+
 
 DrainState
 CXLMemCtrl::drain()

@@ -28,8 +28,8 @@ class CXLMemCtrl(ClockedObject):
     # frontend part and a backend part, with reads and writes serviced
     # by the queues only seeing the frontend contribution, and reads
     # serviced by the memory seeing the sum of the two
-    static_frontend_latency = Param.Latency("8ns", "Static frontend latency")
-    static_backend_latency = Param.Latency("8ns", "Static backend latency")
+    static_frontend_latency = Param.Latency("25ns", "Static frontend latency")
+    static_backend_latency = Param.Latency("25ns", "Static backend latency")
 
     # delay for recheck the queues
     delay = Param.Latency("6ns", "Static delay of waiting read queue")
