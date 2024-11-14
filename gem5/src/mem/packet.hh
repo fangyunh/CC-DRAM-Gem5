@@ -1237,6 +1237,19 @@ class Packet : public Printable, public Extensible<Packet>
         return (const T*)data;
     }
 
+    // template <typename T>
+    // const T*
+    // getConstPtr() const
+    // {
+    //     // Check if the flags indicate valid data
+    //     if (!flags.isSet(STATIC_DATA | DYNAMIC_DATA)) {
+    //         // Return nullptr if data flags are not set
+    //         return nullptr;
+    //     }
+    //     return (const T*)data;
+    // }
+
+
     /**
      * Get the data in the packet byte swapped from big endian to
      * host endian.

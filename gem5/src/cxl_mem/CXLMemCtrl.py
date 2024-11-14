@@ -1,12 +1,13 @@
 from m5.params import *
 from m5.citations import add_citation
 from m5.objects.ClockedObject import *
+# from m5.objects.AbstractMemory import *
 from m5.proxy import *
 
 class CXLMemCtrl(ClockedObject):
     type = 'CXLMemCtrl'
     cxx_header = 'cxl_mem/cxl_mem_ctrl.hh'
-    cxx_class = 'gem5::CXLMemCtrl'
+    cxx_class = 'gem5::memory::CXLMemCtrl'
 
     # Port connects with CPU
     cpu_side_port = ResponsePort("Port connected to CPU")

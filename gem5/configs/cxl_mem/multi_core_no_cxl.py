@@ -69,10 +69,13 @@ system.cpu = [X86TimingSimpleCPU() for i in range(2)]
 
 # Create a DDR5 memory controller and connect it to the membus
 
-system.mem_ctrl = MemCtrl()
-system.mem_ctrl.dram = DDR5_4400_4x8()
-system.mem_ctrl.dram.range = system.mem_ranges[0]
+# system.mem_ctrl = MemCtrl()
+# system.mem_ctrl.dram = DDR5_4400_4x8()
+# system.mem_ctrl.dram.range = system.mem_ranges[0]
 
+system.cxl_mem_ctrl = CXLMemCtrl()
+system.cxl_mem_ctrl.dram = DDR5_4400_4x8()
+system.cxl_mem_ctrl.dram.range = system.mem_ranges[0]
 
 # create the interrupt controller for the CPU and connect to the membus
 for cpu in system.cpu:
@@ -80,7 +83,7 @@ for cpu in system.cpu:
 
 # Create the Ruby System
 system.caches = MyCacheSystem()
-system.caches.setup(system, system.cpu, [system.mem_ctrl])
+system.caches.setup(system, system.cpu, [system.cxl_mem_ctrl])
 
 # Run application and use the compiled ISA to find the binary
 # grab the specific path to the binary

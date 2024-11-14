@@ -18,9 +18,9 @@
 #include "base/statistics.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
+#include "mem/abstract_mem.hh"
 #include "mem/port.hh"
 #include "mem/qport.hh"
-#include "enums/MemSched.hh"
 #include "params/CXLMemCtrl.hh"
 #include "sim/clocked_object.hh"
 #include "sim/cur_tick.hh"
@@ -34,6 +34,10 @@
 namespace gem5
 {
 
+namespace memory
+{
+
+
 
 /** Design a CXL Packet structure to manage packet */
 // class CXLPacket {
@@ -46,6 +50,8 @@ namespace gem5
 
 //     /** This comes from the outside world */
 //     PacketPtr pkt;
+
+//     Addr address;
 
 //     bool is_read;
 
@@ -287,7 +293,8 @@ class CXLMemCtrl : public ClockedObject
                   PortID idx=InvalidPortID) override;
     ~CXLMemCtrl() {}
 };
-
+  
+} // namespace memory
 } // namespace gem5
 
 #endif //__CXL_MEM_CTRL_HH__

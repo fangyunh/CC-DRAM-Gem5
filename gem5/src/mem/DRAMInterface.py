@@ -1289,7 +1289,7 @@ class DDR5_4400_4x8(DRAMInterface):
     bank_groups_per_rank = 8
     banks_per_rank = 32
 
-    write_buffer_size = 64
+    write_buffer_size = 128
     read_buffer_size = 64
 
     # For 4400 MT/s

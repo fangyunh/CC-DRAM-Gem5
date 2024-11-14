@@ -35,6 +35,7 @@ system.cxl_mem_ctrl = CXLMemCtrl(
     response_buffer_size=64
 )
 
+
 # Create a DDR3 memory controller and connect it to the membus
 system.mem_ctrl = MemCtrl()
 system.mem_ctrl.dram = DDR5_4400_4x8()

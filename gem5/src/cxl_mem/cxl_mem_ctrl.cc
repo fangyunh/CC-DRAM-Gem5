@@ -15,9 +15,13 @@ extern "C" {
 namespace gem5
 {
 
+namespace memory
+{
+
+
 // Constructor
 CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
-    ClockedObject(p), 
+    ClockedObject(p),
     cpu_side_port(name() + ".cpu_side_port", *this),
     memctrl_side_port(name() + ".memctrl_side_port", *this),
     reqEvent([this] {processRequestEvent();}, name()),
@@ -93,6 +97,7 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
     panic_if(!(pkt->isRead() || pkt->isWrite()),
              "Should only see read and writes at memory controller\n");
 
+
     if (prevArrival != 0) {
         stats.totGap += curTick() - prevArrival;
     }
@@ -131,17 +136,17 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
                     if (it != packetLatency.end()) {
                         packetLatency.erase(it);
                     }
-
+                    DPRINTF(CXLMemCtrl, "Don't need to enqueue in write, updated\n");
                     break;
                 }
             } 
 
             if (!found) {
                 // // **Create a copy of the write packet**
-                // PacketPtr write_pkt = new Packet(pkt->req, pkt->cmd);
-                // // **Allocate data storage for the packet**
-                // write_pkt->allocate();
-                // memcpy(write_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
+                PacketPtr write_pkt = new Packet(pkt->req, pkt->cmd);
+                // **Allocate data storage for the packet**
+                write_pkt->allocate();
+                memcpy(write_pkt->getPtr<uint8_t>(), pkt->getPtr<uint8_t>(), pkt->getSize());
 
                 // // remove previous packet and add the write packet
                 // auto it = packetLatency.find(pkt->id);
@@ -151,7 +156,9 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
                 // packetLatency[write_pkt->id] = curTick();
 
                 // writeQueue.push_back(write_pkt);
-                writeQueue.push_back(pkt);
+                DPRINTF(CXLMemCtrl, "Enqueue in Write queue\n");
+                
+                writeQueue.push_back(write_pkt);
             }
 
             // Respond the write request
@@ -269,8 +276,15 @@ CXLMemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency)
     DPRINTF(CXLMemCtrl, "Responding to Address %#x.. \n", pkt->getAddr());
     bool needsResponse = pkt->needsResponse();
 
+
     if (needsResponse) {
         pkt->makeResponse();
+        assert(pkt->isResponse());
+
+        DPRINTF(CXLMemCtrl, "Test if pkt data can be accessed\n");
+        const uint8_t* data = pkt->getConstPtr<uint8_t>();
+        unsigned size = pkt->getSize();
+
         Tick response_time = curTick() + static_latency;
 
         // Currently does not set latency
@@ -302,22 +316,34 @@ CXLMemCtrl::findInWriteQueue(PacketPtr pkt)
 {
     Addr addr = pkt->getAddr();
     unsigned size = pkt->getSize();
+    unsigned remaining = size;
+    unsigned current_addr = addr;
+    const unsigned cacheline_size = 64;
 
     for (auto it = writeQueue.begin(); it != writeQueue.end(); ++it) {
         PacketPtr write_pkt = *it;
         Addr write_addr = write_pkt->getAddr();
         unsigned write_size = write_pkt->getSize();
 
-        // Check if the read request overlaps with the write packet
-        if (addr >= write_addr && (addr + size) <= (write_addr + write_size)) {
-            // **Copy data from write packet to read packet**
-            unsigned offset = addr - write_addr;
-            memcpy(pkt->getPtr<uint8_t>(), write_pkt->getConstPtr<uint8_t>() + offset, size);
+        // if (current_addr >= write_addr && current_addr < (write_addr + write_size)) {
+        //     unsigned offset = current_addr - write_addr;
+        //     unsigned copy_size = std::min(remaining, (unsigned)(write_size - offset));
+        //     memcpy(pkt->getPtr<uint8_t>() + (size - remaining), write_pkt->getConstPtr<uint8_t>() + offset, copy_size);
+        //     remaining -= copy_size;
+        //     current_addr += copy_size;
+
+        //     if (remaining == 0) {
+        //         return true;
+        //     }
+        // }
+        if (addr == write_addr && size == cacheline_size) {
+            memcpy(pkt->getPtr<uint8_t>(), write_pkt->getConstPtr<uint8_t>(), cacheline_size);
             return true;
         }
     }
     return false;
 }
+
 
 
 // Send request to memory controller
@@ -771,6 +797,6 @@ CXLMemCtrl::drain()
     }
 }
 
-
+} // namespace memory
 
 }
