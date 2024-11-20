@@ -87,7 +87,7 @@ class CXLMemCtrl : public ClockedObject
         void recvRespRetry() override;
     };
 
-    CPUPort cpu_side_port;
+    CPUPort cpu_side_ports;
 
     class MemCtrlPort: public RequestPort
     {
@@ -152,12 +152,22 @@ class CXLMemCtrl : public ClockedObject
       statistics::Scalar totalReadLatency;
       statistics::Scalar totalWriteLatency;
       statistics::Scalar totGap;
+      /** Latency of read accessing DRAM */
+      statistics::Scalar totalDRAMReadLatency;
+      statistics::Scalar totalCompressionLatency;
 
       statistics::Scalar totalPacketsNum;
       statistics::Scalar totalReadPacketsNum;
+
+      /** Latency that extract 64B from 2KB */
+      statistics::Scalar totalReadCopyLatency;
+
+      /** Packets number of read request to DRAM */
+      statistics::Scalar totalDRAMReadPacketsNum;
       statistics::Scalar totalWritePacketsNum;
       statistics::Scalar totalPacketsSize;
       statistics::Scalar totalCompressedPacketsNum;
+      statistics::Scalar totalCompressionTimes;
       statistics::Scalar totalReadPacketsSize;
       statistics::Scalar totalWritePacketsSize;
       statistics::Scalar totalCompressedPacketsSize;
@@ -173,6 +183,9 @@ class CXLMemCtrl : public ClockedObject
       statistics::Formula avgReadLatency;
       statistics::Formula avgWriteLatency;
       statistics::Formula avgCompressedSize;
+      statistics::Formula avgCompressionLatency;
+      statistics::Formula avgDRAMReadLatency;
+      statistics::Formula avgReadCopyLatency;
     };
 
 
@@ -225,9 +238,13 @@ class CXLMemCtrl : public ClockedObject
     /** LZ4 compression */
     void LZ4Compression();
 
-    /**
-     * Remember if we have to retry a request when available.
-     */
+    /** Handle read request for compressed data block */
+    void handleReadRequest(PacketPtr pkt);
+    
+    // Mapping for compressed block
+    std::unordered_map<PacketPtr, PacketPtr> compressedReadMap;
+
+    const unsigned blockSize;
 
     // retry to receive req
     bool retryRdReq;

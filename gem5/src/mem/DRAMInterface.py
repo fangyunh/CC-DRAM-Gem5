@@ -1282,6 +1282,8 @@ class DDR5_4400_4x8(DRAMInterface):
     # 4Gbx8 configuration
     devices_per_rank = 4
 
+    # Total Row Buffer Size=256B×4=1024B(1KB)
+
     ranks_per_channel = 1
 
     # 4Gbx8 configuration of DDR5 has 8 bank groups,

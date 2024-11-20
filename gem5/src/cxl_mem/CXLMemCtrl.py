@@ -10,7 +10,7 @@ class CXLMemCtrl(ClockedObject):
     cxx_class = 'gem5::memory::CXLMemCtrl'
 
     # Port connects with CPU
-    cpu_side_port = ResponsePort("Port connected to CPU")
+    cpu_side_ports = ResponsePort("Port connected to CPU")
 
     # Ports connect with Memory Controllers
     memctrl_side_port = RequestPort("Ports connected to MemCtrls")
@@ -31,6 +31,9 @@ class CXLMemCtrl(ClockedObject):
     static_frontend_latency = Param.Latency("25ns", "Static frontend latency")
     static_backend_latency = Param.Latency("25ns", "Static backend latency")
 
-    # delay for recheck the queues
-    delay = Param.Latency("6ns", "Static delay of waiting read queue")
+    # delay for decompression
+    delay = Param.Latency("10ns", "Static delay of waiting read queue")
+
+    # Compressed data block size
+    compressed_size = Param.Unsigned(1024, "Compressed data block size")
     

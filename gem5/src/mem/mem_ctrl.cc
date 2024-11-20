@@ -642,6 +642,12 @@ MemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency,
         // number of data beats.
         Tick response_time = curTick() + static_latency + pkt->headerDelay +
                              pkt->payloadDelay;
+        
+
+        stats.totRespTime += static_latency + pkt->headerDelay +
+                             pkt->payloadDelay;
+        stats.totRespPackets += 1;
+
         // Here we reset the timing of the packet before sending it out.
         pkt->headerDelay = pkt->payloadDelay = 0;
 
@@ -826,6 +832,10 @@ MemCtrl::doBurstAccess(MemPacket* mem_pkt, MemInterface* mem_intr)
         stats.requestorReadTotalLat[mem_pkt->requestorId()] +=
             mem_pkt->readyTime - mem_pkt->entryTime;
         stats.requestorReadBytes[mem_pkt->requestorId()] += mem_pkt->size;
+
+        // Record read to DRAM
+        stats.totDRAMReadLatency += mem_pkt->readyTime - mem_pkt->entryTime;
+        stats.totDRAMReadPacketsNum += 1;
     } else {
         ++(mem_intr->writesThisTime);
         stats.requestorWriteBytes[mem_pkt->requestorId()] += mem_pkt->size;
@@ -1273,7 +1283,23 @@ MemCtrl::CtrlStats::CtrlStats(MemCtrl &_ctrl)
              "Per-requestor read average memory access latency"),
     ADD_STAT(requestorWriteAvgLat, statistics::units::Rate<
                 statistics::units::Tick, statistics::units::Count>::get(),
-             "Per-requestor write average memory access latency")
+             "Per-requestor write average memory access latency"),
+    
+    ADD_STAT(totRespTime, statistics::units::Tick::get(),
+            "Total Response time for packets to send back"),
+    ADD_STAT(totRespPackets, statistics::units::Count::get(),
+            "Total number of response packets"),
+    ADD_STAT(avgRespTime, statistics::units::Rate<
+                statistics::units::Tick, statistics::units::Count>::get(),
+            "Average response time in tick"),
+    
+    ADD_STAT(totDRAMReadLatency, statistics::units::Tick::get(),
+            "Total DRAM read latency"),
+    ADD_STAT(totDRAMReadPacketsNum, statistics::units::Count::get(),
+            "Total number of DRAM Read packets"),
+    ADD_STAT(avgDRAMReadLatency, statistics::units::Rate<
+                statistics::units::Tick, statistics::units::Count>::get(),
+            "Average DRAM read time in tick")
 {
 }
 
@@ -1371,6 +1397,12 @@ MemCtrl::CtrlStats::regStats()
     requestorWriteRate = requestorWriteBytes / simSeconds;
     requestorReadAvgLat = requestorReadTotalLat / requestorReadAccesses;
     requestorWriteAvgLat = requestorWriteTotalLat / requestorWriteAccesses;
+
+    avgRespTime.precision(4);
+    avgRespTime = totRespTime / totRespPackets;
+
+    avgDRAMReadLatency.precision(4);
+    avgDRAMReadLatency = totDRAMReadLatency / totDRAMReadPacketsNum;
 }
 
 void

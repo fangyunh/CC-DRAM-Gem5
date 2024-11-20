@@ -575,6 +575,15 @@ class MemCtrl : public qos::MemCtrl
         statistics::Scalar servicedByWrQ;
         statistics::Scalar mergedWrBursts;
         statistics::Scalar neitherReadNorWriteReqs;
+
+        statistics::Scalar totRespTime;
+        statistics::Scalar totRespPackets;
+        statistics::Formula avgRespTime;
+
+        statistics::Scalar totDRAMReadLatency;
+        statistics::Scalar totDRAMReadPacketsNum;
+        statistics::Formula avgDRAMReadLatency;
+
         // Average queue lengths
         statistics::Average avgRdQLen;
         statistics::Average avgWrQLen;

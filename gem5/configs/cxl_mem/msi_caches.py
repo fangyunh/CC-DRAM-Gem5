@@ -190,8 +190,10 @@ class DirController(Directory_Controller):
         self.addr_ranges = ranges
         self.ruby_system = ruby_system
         self.directory = RubyDirectoryMemory()
-        # Connect this directory to the memory side.
-        self.memory = mem_ctrls[0].cpu_side_port
+        # Connect this directory to the CXL memory side for CXL
+        self.memory = mem_ctrls[0].cpu_side_ports
+        # Connect to the DRAM side
+        # self.memory = mem_ctrls[0].port
         self.connectQueues(ruby_system)
 
     def connectQueues(self, ruby_system):

@@ -22,7 +22,7 @@ namespace memory
 // Constructor
 CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
     ClockedObject(p),
-    cpu_side_port(name() + ".cpu_side_port", *this),
+    cpu_side_ports(name() + ".cpu_side_ports", *this),
     memctrl_side_port(name() + ".memctrl_side_port", *this),
     reqEvent([this] {processRequestEvent();}, name()),
     respEvent([this] {processResponseEvent();}, name()),
@@ -31,6 +31,7 @@ CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
     responseQueueSize(p.response_buffer_size),
     prevArrival(0),
     delay(p.delay),
+    blockSize(p.compressed_size),
     writePktThreshold(p.write_pkt_threshold),
     frontendLatency(p.static_frontend_latency),
     backendLatency(p.static_backend_latency),
@@ -60,7 +61,7 @@ CXLMemCtrl::CXLMemCtrl(const CXLMemCtrlParams &p) :
 void
 CXLMemCtrl::init()
 {
-    if (!cpu_side_port.isConnected()) {
+    if (!cpu_side_ports.isConnected()) {
         fatal("CXLMemCtrl %s is unconnected on CPU side port!\n", name());
     }
 
@@ -73,8 +74,8 @@ CXLMemCtrl::init()
 Port &
 CXLMemCtrl::getPort(const std::string &if_name, PortID idx)
 {
-    if (if_name == "cpu_side_port") {
-        return cpu_side_port;
+    if (if_name == "cpu_side_ports") {
+        return cpu_side_ports;
     }
     else if (if_name == "memctrl_side_port"){
         return memctrl_side_port;
@@ -209,15 +210,15 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
             retryRdReq = true;
             return false;
         } else {
-
-            stats.totalReadPacketsNum++;
             stats.totalReadPacketsSize += size;
-            readQueue.push_back(pkt);
+            stats.totalReadPacketsNum += 1;
+            handleReadRequest(pkt);
+            // readQueue.push_back(pkt);
 
-            if (!reqEvent.scheduled()) {
-                DPRINTF(CXLMemCtrl, "Request scheduled immediately\n");
-                schedule(reqEvent, curTick());
-            }
+            // if (!reqEvent.scheduled()) {
+            //     DPRINTF(CXLMemCtrl, "Request scheduled immediately\n");
+            //     schedule(reqEvent, curTick());
+            // }
         }
     }
 
@@ -237,17 +238,63 @@ CXLMemCtrl::recvTimingResp(PacketPtr pkt)
     }
 
     if (pkt->isRead()) {
-        respQueue.push_back(pkt);
+        // Check if this packet is a response to our 2KB read request
+        auto it = compressedReadMap.find(pkt);
+        if (it != compressedReadMap.end()) {
+            // This is our 2KB read response
+            PacketPtr original_pkt = it->second;
+            // Record read copy time
+            Tick start_point = curTick();
 
-        // Forward the packet to the CPU side port
-        if (!respEvent.scheduled()) {
-            DPRINTF(CXLMemCtrl, "Response scheduled immediately\n");
-            schedule(respEvent, curTick());
+            compressedReadMap.erase(it);
+
+            // Extract the requested 64B from the 2KB block
+            Addr original_addr = original_pkt->getAddr();
+            unsigned original_size = original_pkt->getSize();
+
+            Addr offset = original_addr - pkt->getAddr();
+            assert(offset + original_size <= pkt->getSize());
+
+            memcpy(original_pkt->getPtr<uint8_t>(), pkt->getConstPtr<uint8_t>() + offset, original_size);
+
+            // Delete the 2KB packet since we're done with it
+            delete pkt;
+
+            // add read copy latency
+            stats.totalReadCopyLatency += curTick() - start_point;
+
+            respQueue.push_back(original_pkt);
+
+            // Forward the packet to the CPU side port
+            if (!respEvent.scheduled()) {
+                DPRINTF(CXLMemCtrl, "Response scheduled with decompression delay\n");
+                schedule(respEvent, curTick() + delay);
+            }
+            return true;
         }
-        return true;
+
+
+        // respQueue.push_back(pkt);
+
+        // // Forward the packet to the CPU side port
+        // if (!respEvent.scheduled()) {
+        //     DPRINTF(CXLMemCtrl, "Response scheduled immediately\n");
+        //     schedule(respEvent, curTick());
+        // }
+        // return true;
     } else {
         
         DPRINTF(CXLMemCtrl, "Resp not required for write");
+        // **Record write latency here**
+        auto it = packetLatency.find(pkt->id);
+        if (it != packetLatency.end()) {
+            Tick latency = curTick() - it->second;
+            stats.totalWriteLatency += latency;
+            stats.writeLatencyHistogram.sample(latency);
+            stats.totalLatency += latency;
+            stats.latencyHistogram.sample(latency);
+            packetLatency.erase(it);
+        }
         
         delete pkt;
         return true;
@@ -261,6 +308,44 @@ CXLMemCtrl::handleFunctional(PacketPtr pkt)
 {
     memctrl_side_port.sendFunctional(pkt);
 }
+
+void
+CXLMemCtrl::handleReadRequest(PacketPtr pkt)
+{
+    Addr addr = pkt->getAddr();
+    unsigned size = pkt->getSize();
+
+    // Align the address to the start of a 2KB block
+    // const unsigned blockSize = 2 * 1024; // 1KB
+    Addr blockStartAddr = addr & ~(blockSize - 1);
+
+    // The size of the block to read is 2KB
+    unsigned blockSizeToRead = blockSize;
+
+    DPRINTF(CXLMemCtrl, "Creating 2KB read request from addr %#x to %#x\n",
+            blockStartAddr, blockStartAddr + blockSizeToRead - 1);
+
+    // Create a new read request for the 2KB block
+    RequestPtr new_req = std::make_shared<Request>(
+        blockStartAddr, blockSizeToRead, pkt->req->getFlags(), pkt->req->requestorId());
+
+    PacketPtr new_pkt = new Packet(new_req, MemCmd::ReadReq);
+    new_pkt->allocate();
+
+    // Map the original pkt to the new_pkt for later use
+    compressedReadMap[new_pkt] = pkt;
+
+    // Add the new packet to the read queue
+    readQueue.push_back(new_pkt);
+    stats.totalDRAMReadPacketsNum += 1;
+
+    // Schedule the request event if not already scheduled
+    if (!reqEvent.scheduled()) {
+        DPRINTF(CXLMemCtrl, "Request scheduled for compressed data packet\n");
+        schedule(reqEvent, curTick());
+    }
+}
+
 
 void
 CXLMemCtrl::recvReqRetry() {
@@ -278,7 +363,7 @@ CXLMemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency)
     // send response pkt back to cpu
     if (pkt->isResponse()) {
         Tick response_time = curTick() + static_latency;
-        cpu_side_port.schedTimingResp(pkt, response_time);
+        cpu_side_ports.schedTimingResp(pkt, response_time);
         return;
     }
 
@@ -290,13 +375,13 @@ CXLMemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency)
 
         Tick response_time = curTick() + static_latency;
 
-        // if (!cpu_side_port.sendTimingResp(pkt)) {
+        // if (!cpu_side_ports.sendTimingResp(pkt)) {
         //     DPRINTF(CXLMemCtrl, "CPU cannot accept response, will retry\n");
         //     // Retry the to send packet
         //     retryMemResp = true;
         //     return;
         // }
-        cpu_side_port.schedTimingResp(pkt, response_time);
+        cpu_side_ports.schedTimingResp(pkt, response_time);
 
     } else {
         DPRINTF(CXLMemCtrl, "No need to respond\n");
@@ -384,9 +469,6 @@ CXLMemCtrl::processRequestEvent()
     if (nextRWState == READ) {
         PacketPtr pkt = readQueue.front();
 
-        // Read compressed data block
-
-
         // Try to send request to downside memory controller
         if (!memctrl_side_port.sendTimingReq(pkt)) {
             DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
@@ -419,7 +501,12 @@ CXLMemCtrl::processRequestEvent()
         assert(nextRWState == WRITE);
         if (nextRWState != RWState) {
             // If it is first time to write, compress the data
+            Tick start_point = curTick();
             LZ4Compression();
+            Tick end_point = curTick();
+
+            stats.totalCompressionLatency += end_point - start_point;
+            stats.totalCompressionTimes += 1;
         }
 
         // Update the state to WRITE
@@ -438,20 +525,7 @@ CXLMemCtrl::processRequestEvent()
             }
             DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
 
-            // **Record write latency here**
-            auto it = packetLatency.find(pkt->id);
-            if (it != packetLatency.end()) {
-                Tick latency = curTick() - it->second;
-                stats.totalWriteLatency += latency;
-                stats.writeLatencyHistogram.sample(latency);
-                stats.totalLatency += latency;
-                stats.latencyHistogram.sample(latency);
-                packetLatency.erase(it);
-            }
-
             writeQueue.pop_front();
-            // Increment compressed packets number
-            stats.totalCompressedPacketsNum += 1;
             cmpedPkt++; // increment compressed pkt num
         }
 
@@ -467,18 +541,18 @@ CXLMemCtrl::processRequestEvent()
 
     if (!reqEvent.scheduled() && (!(writeQEmpty() && readQEmpty()))) {
         // avoid stuck in loop of waiting, add delay
-        schedule(reqEvent, curTick() + delay);
+        schedule(reqEvent, curTick());
     }
 
     // Request queue is free to accept previous failed packets
     if ((retryWrReq  && !writeQueueFull())) {
         retryWrReq = false;
-        cpu_side_port.sendRetryReq();
+        cpu_side_ports.sendRetryReq();
     } 
     
     if ((retryRdReq && !readQueueFull())) {
         retryRdReq = false;
-        cpu_side_port.sendRetryReq();
+        cpu_side_ports.sendRetryReq();
     }
 
     if (drainState() == DrainState::Draining && writeQEmpty() && readQEmpty() && respQEmpty()) {
@@ -508,7 +582,9 @@ CXLMemCtrl::processResponseEvent()
         stats.totalLatency += latency;
 
         stats.latencyHistogram.sample(latency);
-        
+
+        // Record read packets latency from DRAM
+        stats.totalDRAMReadLatency += latency;
         packetLatency.erase(it);
     }
 
@@ -565,6 +641,8 @@ void CXLMemCtrl::LZ4Compression() {
         DPRINTF(CXLMemCtrl, "Compressed %d packets from %d bytes to %d bytes\n",
                 writePktThreshold, srcSize, compressedSize);
         stats.totalCompressedPacketsSize += compressedSize;
+        // Increment compressed packets number
+        stats.totalCompressedPacketsNum += 1;
     } else {
         DPRINTF(CXLMemCtrl, "Compression failed for packets\n");
     }
@@ -587,7 +665,7 @@ CXLMemCtrl::getAddrRanges()
 void
 CXLMemCtrl::sendRangeChange()
 {
-    cpu_side_port.sendRangeChange();
+    cpu_side_ports.sendRangeChange();
 }
 
 bool
@@ -617,10 +695,16 @@ CXLStats(CXLMemCtrl &_cxlmc)
             "Total latency of all packets in Tick"),
     ADD_STAT(totalReadLatency, statistics::units::Tick::get(),
             "Total Read latency of all packets in Tick"),
+    ADD_STAT(totalDRAMReadLatency, statistics::units::Tick::get(),
+            "Total Read to DRAM latency of all packets in Tick"),
     ADD_STAT(totalWriteLatency, statistics::units::Tick::get(),
             "Total write latency of all packets in Tick"),
     ADD_STAT(totGap, statistics::units::Tick::get(),
             "Total gap between packets in Tick"),
+    ADD_STAT(totalCompressionLatency, statistics::units::Tick::get(),
+            "Total compression latency"),
+    ADD_STAT(totalReadCopyLatency, statistics::units::Tick::get(),
+            "Total Read Copy latency"),
 
     ADD_STAT(totalPacketsNum, statistics::units::Count::get(),
             "Total number of packets"),
@@ -630,6 +714,12 @@ CXLStats(CXLMemCtrl &_cxlmc)
             "Total number of read packets"),
     ADD_STAT(totalWritePacketsNum, statistics::units::Count::get(),
             "Total number of write packets"),
+    ADD_STAT(totalDRAMReadPacketsNum, statistics::units::Count::get(),
+            "Total number of DRAM read packets"),
+    
+    ADD_STAT(totalCompressionTimes, statistics::units::Count::get(),
+            "Total number of compression happens"),
+    
     
     ADD_STAT(totalPacketsSize, statistics::units::Byte::get(),
             "Total size of packets in Bytes"),
@@ -665,8 +755,17 @@ CXLStats(CXLMemCtrl &_cxlmc)
                 statistics::units::Tick, statistics::units::Count>::get(),
             "Average Write latency per packet in ns"),
     ADD_STAT(avgCompressedSize, statistics::units::Rate<
+                statistics::units::Byte, statistics::units::Count>::get(),
+            "Average compressed packet size in Bytes"),
+    ADD_STAT(avgDRAMReadLatency, statistics::units::Rate<
                 statistics::units::Tick, statistics::units::Count>::get(),
-            "Average compressed packet size in Bytes")
+            "Average DRAM read latency per packet in ns"),
+    ADD_STAT(avgCompressionLatency, statistics::units::Rate<
+                statistics::units::Tick, statistics::units::Count>::get(),
+            "Average latency per compression in ns"),
+    ADD_STAT(avgReadCopyLatency, statistics::units::Rate<
+                statistics::units::Tick, statistics::units::Count>::get(),
+            "Average DRAM actual read copy latency per packet in ns")
 { }
 
 void
@@ -683,7 +782,9 @@ CXLMemCtrl::CXLStats::regStats()
     totalReadLatency
         .flags(nozero | nonan)
         ;
-    
+    totalDRAMReadLatency
+        .flags(nozero | nonan)
+        ;
     totalWriteLatency
         .flags(nozero | nonan)
         ;
@@ -709,6 +810,7 @@ CXLMemCtrl::CXLStats::regStats()
     avgLatency.precision(4);
     avgReadLatency.precision(4);
     avgWriteLatency.precision(4);
+    avgDRAMReadLatency.precision(4);
     avgRdBWSys.precision(8);
     avgWrBWSys.precision(8);
 
@@ -717,6 +819,9 @@ CXLMemCtrl::CXLStats::regStats()
     avgLatency = totalLatency / totalPacketsNum / tick_to_ns;
     avgReadLatency = totalReadLatency / totalReadPacketsNum / tick_to_ns;
     avgWriteLatency = totalWriteLatency / totalWritePacketsNum / tick_to_ns;
+    avgDRAMReadLatency = totalDRAMReadLatency / totalDRAMReadPacketsNum / tick_to_ns;
+    avgCompressionLatency = totalCompressionLatency / totalCompressionTimes / tick_to_ns;
+    avgReadCopyLatency = totalReadCopyLatency / totalDRAMReadPacketsNum / tick_to_ns;
 
     // Configure avg Compressed Size
     avgCompressedSize.precision(4);

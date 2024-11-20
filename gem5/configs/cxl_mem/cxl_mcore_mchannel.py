@@ -1,65 +1,64 @@
-
-# import the m5 (gem5) library created when gem5 is built
 import m5
-
-# import all of the SimObjects
 from m5.objects import *
-
-# Needed for running C++ threads
 m5.util.addToPath("../")
+from common.MemConfig import create_mem_intf, config_mem
 from common.FileSystemConfig import config_filesystem
-
-# You can import ruby_caches_MI_example to use the MI_example protocol instead
-# of the MSI protocol
 from msi_caches import MyCacheSystem
 
-# create the system we are going to simulate
+# Create a simple options class
+class OptionsDDR5:
+    def __init__(self):
+        self.mem_channels = 2
+        self.mem_type = 'DDR5_4400_4x8'
+        self.mem_ranks = None
+        self.enable_dram_powerdown = None
+        self.mem_channels_intlv = 1024
+        self.xor_low_bit = 20
+
+class OptionsDDR4:
+    def __init__(self):
+        self.mem_channels = 2
+        self.mem_type = 'DDR4_2400_4x16'
+        self.mem_ranks = None
+        self.enable_dram_powerdown = None
+        self.mem_channels_intlv = 2048
+        self.xor_low_bit = 20
+
+options = OptionsDDR5()
+
+# Create the system
 system = System()
+system.clk_domain = SrcClockDomain(clock="1GHz", voltage_domain=VoltageDomain())
+system.mem_mode = "timing"
+system.mem_ranges = [AddrRange('4GB')]
 
-# Set the clock frequency of the system (and all of its children)
-system.clk_domain = SrcClockDomain()
-system.clk_domain.clock = "1GHz"
-system.clk_domain.voltage_domain = VoltageDomain()
-
-# Set up the system
-system.mem_mode = "timing"  # Use timing accesses
-system.mem_ranges = [AddrRange("2GB")]  # Create an address range
-
-# Create a pair of simple CPUs
+# Create CPUs, caches, and other components
 system.cpu = [X86TimingSimpleCPU() for i in range(2)]
+for cpu in system.cpu:
+    cpu.createInterruptController()
 
-# Instantiate the CXL Memory Controller
+# Create the CXL Memory Controller
 system.cxl_mem_ctrl = CXLMemCtrl(
     read_buffer_size=64,
     write_buffer_size=128,
-    response_buffer_size=64
+    response_buffer_size=64,
+    # Could be 2KB when using DDR4
+    compressed_size=1024
 )
-
-
-# Create a DDR3 memory controller and connect it to the membus
-system.mem_ctrl = MemCtrl()
-system.mem_ctrl.dram = DDR5_4400_4x8()
-system.mem_ctrl.dram.range = system.mem_ranges[0]
-
-# create the interrupt controller for the CPU and connect to the membus
-for cpu in system.cpu:
-    cpu.createInterruptController()
 
 # Create the Ruby System
 system.caches = MyCacheSystem()
 system.caches.setup(system, system.cpu, [system.cxl_mem_ctrl])
 
-# Instantiate the memory bus
+# Create the memory bus
 system.membus = SystemXBar()
 
-# Connect CXL memory controller to DRAM XBar for multi-channels
+# Connect the CXL memory controller to the CPU side of the bus
 system.cxl_mem_ctrl.memctrl_side_port = system.membus.cpu_side_ports
 
-# Connect DRAM XBar to DRAM Memory controller
-system.mem_ctrl.port = system.membus.mem_side_ports
+# Configure memory controllers using config_mem
+config_mem(options, system)
 
-# Run application and use the compiled ISA to find the binary
-# grab the specific path to the binary
 thispath = os.path.dirname(os.path.realpath(__file__))
 binary = os.path.join(
     thispath,
