@@ -46,7 +46,9 @@ scons build/{ISA}/gem5.{variants} -j 12    //ISA includes x86, arm, RISCV;      
 
 **Compile gem5 with Cache Coherence Protocol:**
 scons defconfig build/X86_MSI build_opts/X86
+
 scons setconfig build/X86_MSI RUBY_PROTOCOL_MSI=y SLICC_HTML=y
+
 scons build/X86_MSI/gem5.opt
 
 **Clean Compiled file:**
