@@ -154,7 +154,6 @@ class CXLMemCtrl : public ClockedObject
       statistics::Scalar totGap;
       /** Latency of read accessing DRAM */
       statistics::Scalar totalDRAMReadLatency;
-      statistics::Scalar totalCompressionLatency;
 
       statistics::Scalar totalPacketsNum;
       statistics::Scalar totalReadPacketsNum;
@@ -164,6 +163,7 @@ class CXLMemCtrl : public ClockedObject
 
       /** Packets number of read request to DRAM */
       statistics::Scalar totalDRAMReadPacketsNum;
+      statistics::Scalar totalNonDRAMReadPacketsNum;
       statistics::Scalar totalWritePacketsNum;
       statistics::Scalar totalPacketsSize;
       statistics::Scalar totalCompressedPacketsNum;
@@ -178,12 +178,12 @@ class CXLMemCtrl : public ClockedObject
       statistics::Histogram latencyHistogram;
       statistics::Histogram readLatencyHistogram;
       statistics::Histogram writeLatencyHistogram;
+      statistics::Histogram compressedSizeHistogram;
 
       statistics::Formula avgLatency;
       statistics::Formula avgReadLatency;
       statistics::Formula avgWriteLatency;
       statistics::Formula avgCompressedSize;
-      statistics::Formula avgCompressionLatency;
       statistics::Formula avgDRAMReadLatency;
       statistics::Formula avgReadCopyLatency;
     };
@@ -235,14 +235,38 @@ class CXLMemCtrl : public ClockedObject
      */
     void sendRangeChange();
 
-    /** LZ4 compression */
-    void LZ4Compression();
+    /** 
+     * LZ4 compression, return the compression sizes in the best granularity
+     */
+    std::vector<unsigned int> LZ4Compression();
+  
+    /**
+     * move the assigned size of packets in a buffer, prepared to be compressed
+     */
+    void fillSourceBuffer(char* srcBuffer, int startIndex, int packetsToProcess,
+                             int packetCount);
+
+    /** 
+     * Compress the 4KB data in given granularity, 
+     * return compressed sizes. e.g 4 * 1KB, 2* 2KB, 4KB 
+     */
+    std::vector<unsigned int> DynamicCompression(int blockSizeInKB);
+
+    /** 
+     * select the most appropriate compression granularity by considering the
+     * trade off of access latency and compression ratio. More compression ratio 
+     * means we can get more storage in DRAM, but we also get longer access latency
+     * because we need to read larger size from DRAM.
+     */
+    std::vector<unsigned int> CompressionSelectedSize(); 
 
     /** Handle read request for compressed data block */
     void handleReadRequest(PacketPtr pkt);
     
     // Mapping for compressed block
     std::unordered_map<PacketPtr, PacketPtr> compressedReadMap;
+    // metadata of compressed size
+    std::unordered_map<Addr, unsigned int> compressedBlockSizes;
 
     const unsigned blockSize;
 
@@ -287,6 +311,9 @@ class CXLMemCtrl : public ClockedObject
     // number of already compressed packet
     unsigned cmpedPkt;
 
+    // compressed sizes
+    std::vector<unsigned int> cmpBlockSizes;
+
     // Drain state check
     DrainState drain() override;
     // Marks that no packets will send by CPU
@@ -302,8 +329,6 @@ class CXLMemCtrl : public ClockedObject
     std::deque<PacketPtr> writeQueue;
     /** Resp queue */ 
     std::deque<PacketPtr> respQueue;
-
-    // System* system() const { return _system; }
 
     CXLMemCtrl(const CXLMemCtrlParams &p);
     virtual void init() override;

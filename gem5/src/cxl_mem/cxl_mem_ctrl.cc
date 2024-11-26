@@ -6,6 +6,8 @@
 #include "mem/mem_ctrl.hh"
 #include "sim/system.hh"
 
+#include <vector>
+
 extern "C" {
     // include lz4
     #include "lz4.h"
@@ -213,12 +215,6 @@ CXLMemCtrl::recvTimingReq(PacketPtr pkt)
             stats.totalReadPacketsSize += size;
             stats.totalReadPacketsNum += 1;
             handleReadRequest(pkt);
-            // readQueue.push_back(pkt);
-
-            // if (!reqEvent.scheduled()) {
-            //     DPRINTF(CXLMemCtrl, "Request scheduled immediately\n");
-            //     schedule(reqEvent, curTick());
-            // }
         }
     }
 
@@ -238,7 +234,7 @@ CXLMemCtrl::recvTimingResp(PacketPtr pkt)
     }
 
     if (pkt->isRead()) {
-        // Check if this packet is a response to our 2KB read request
+        // Check if this packet is a response to our compressed read request
         auto it = compressedReadMap.find(pkt);
         if (it != compressedReadMap.end()) {
             // This is our 2KB read response
@@ -264,24 +260,18 @@ CXLMemCtrl::recvTimingResp(PacketPtr pkt)
             stats.totalReadCopyLatency += curTick() - start_point;
 
             respQueue.push_back(original_pkt);
-
-            // Forward the packet to the CPU side port
-            if (!respEvent.scheduled()) {
-                DPRINTF(CXLMemCtrl, "Response scheduled with decompression delay\n");
-                schedule(respEvent, curTick() + delay);
-            }
-            return true;
+            
+        } else {
+            respQueue.push_back(pkt);
         }
 
+        // Forward the packet to the CPU side port
+        if (!respEvent.scheduled()) {
+            DPRINTF(CXLMemCtrl, "Response scheduled with decompression delay\n");
+            schedule(respEvent, curTick() + delay);
+        }
+        return true;
 
-        // respQueue.push_back(pkt);
-
-        // // Forward the packet to the CPU side port
-        // if (!respEvent.scheduled()) {
-        //     DPRINTF(CXLMemCtrl, "Response scheduled immediately\n");
-        //     schedule(respEvent, curTick());
-        // }
-        // return true;
     } else {
         
         DPRINTF(CXLMemCtrl, "Resp not required for write");
@@ -317,27 +307,57 @@ CXLMemCtrl::handleReadRequest(PacketPtr pkt)
 
     // Align the address to the start of a 2KB block
     // const unsigned blockSize = 2 * 1024; // 1KB
-    Addr blockStartAddr = addr & ~(blockSize - 1);
+    // Addr blockStartAddr = addr & ~(blockSize - 1);
 
     // The size of the block to read is 2KB
-    unsigned blockSizeToRead = blockSize;
+    // unsigned blockSizeToRead = blockSize;
+    unsigned int cmpSize;
+    auto it = compressedBlockSizes.find(addr);
+    if (it != compressedBlockSizes.end()) {
+        cmpSize = it->second;
+        // Align start address to interleaving boundary
+        unsigned int interleaveSize = blockSize; // 2KB
+        
+        Addr startAddr = addr;
+        Addr endAddr = startAddr + cmpSize - 1;
 
-    DPRINTF(CXLMemCtrl, "Creating 2KB read request from addr %#x to %#x\n",
-            blockStartAddr, blockStartAddr + blockSizeToRead - 1);
+        DPRINTF(CXLMemCtrl, "Start addr: %#x, end addr: %#x, compressed size: %d\n", startAddr, endAddr, cmpSize);
+        DPRINTF(CXLMemCtrl, "Interleave: %d\n", interleaveSize);
+        // Calculate the interleaving regions for the start and end addresses
+        unsigned int startRegion = startAddr / interleaveSize;
+        unsigned int endRegion = endAddr / interleaveSize;
 
-    // Create a new read request for the 2KB block
-    RequestPtr new_req = std::make_shared<Request>(
-        blockStartAddr, blockSizeToRead, pkt->req->getFlags(), pkt->req->requestorId());
+        DPRINTF(CXLMemCtrl, "Start region: %d, end region: %d\n", startRegion, endRegion);
 
-    PacketPtr new_pkt = new Packet(new_req, MemCmd::ReadReq);
-    new_pkt->allocate();
+        if (startRegion != endRegion) {
+            // Calculate the new start address aligned to the interleaving boundary
+            unsigned int shift = (endAddr % interleaveSize) + 1;
+            
+            startAddr = addr - shift;
 
-    // Map the original pkt to the new_pkt for later use
-    compressedReadMap[new_pkt] = pkt;
+            DPRINTF(CXLMemCtrl, "Shift is: %d\n", shift);
+        }
 
-    // Add the new packet to the read queue
-    readQueue.push_back(new_pkt);
-    stats.totalDRAMReadPacketsNum += 1;
+        DPRINTF(CXLMemCtrl, "Creating %d read request from addr %#x to %#x\n",
+            cmpSize, startAddr, startAddr + cmpSize - 1);
+
+        // Create a new read request for the 2KB block
+        RequestPtr new_req = std::make_shared<Request>(
+            startAddr, cmpSize, pkt->req->getFlags(), pkt->req->requestorId());
+
+        PacketPtr new_pkt = new Packet(new_req, MemCmd::ReadReq);
+        new_pkt->allocate();
+
+        // Map the original pkt to the new_pkt for later use
+        compressedReadMap[new_pkt] = pkt;
+
+        // Add the new packet to the read queue
+        readQueue.push_back(new_pkt);
+        stats.totalDRAMReadPacketsNum += 1;
+    } else {
+        readQueue.push_back(pkt);
+        stats.totalNonDRAMReadPacketsNum += 1;
+    }
 
     // Schedule the request event if not already scheduled
     if (!reqEvent.scheduled()) {
@@ -374,13 +394,6 @@ CXLMemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency)
         pkt->makeResponse();
 
         Tick response_time = curTick() + static_latency;
-
-        // if (!cpu_side_ports.sendTimingResp(pkt)) {
-        //     DPRINTF(CXLMemCtrl, "CPU cannot accept response, will retry\n");
-        //     // Retry the to send packet
-        //     retryMemResp = true;
-        //     return;
-        // }
         cpu_side_ports.schedTimingResp(pkt, response_time);
 
     } else {
@@ -499,40 +512,72 @@ CXLMemCtrl::processRequestEvent()
 
     } else {
         assert(nextRWState == WRITE);
+        
         if (nextRWState != RWState) {
             // If it is first time to write, compress the data
-            Tick start_point = curTick();
-            LZ4Compression();
-            Tick end_point = curTick();
-
-            stats.totalCompressionLatency += end_point - start_point;
+            cmpBlockSizes = LZ4Compression();
             stats.totalCompressionTimes += 1;
         }
 
         // Update the state to WRITE
         RWState = WRITE;
 
-        
-        while (cmpedPkt < writePktThreshold && !writeQEmpty()) {
-            PacketPtr pkt = writeQueue.front();
-            // Try to send the packet to mem ctrl
-            if (!memctrl_side_port.sendTimingReq(pkt)) {
-                DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
-                // Will retry when recvReqRetry is called
-                resendReq = true;
-                nextRWState = WRITE;
-                return;
-            }
-            DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
+        if (cmpBlockSizes.empty()) {
+            // Compression fail
+            while (cmpedPkt < writePktThreshold && !writeQEmpty()) {
+                PacketPtr pkt = writeQueue.front();
 
-            writeQueue.pop_front();
-            cmpedPkt++; // increment compressed pkt num
+                // Try to send the packet to mem ctrl
+                if (!memctrl_side_port.sendTimingReq(pkt)) {
+                    DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
+                    // Will retry when recvReqRetry is called
+                    resendReq = true;
+                    nextRWState = WRITE;
+                    return;
+                }
+                DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
+
+                writeQueue.pop_front();
+                cmpedPkt++; // Increment compressed packet count
+            }
+        } else {
+            // Compression succeeded
+            unsigned int packetsPerBlock = writePktThreshold / cmpBlockSizes.size();
+            unsigned int pktIndex = 0; // Index of the packet being processed
+            unsigned int blockIndex = 0; // Index of the current block in cmpBlockSizes
+
+            while (cmpedPkt < writePktThreshold && !writeQEmpty()) {
+                PacketPtr pkt = writeQueue.front();
+
+                // Assign the compressed size to the packet address
+                compressedBlockSizes[pkt->getAddr()] = cmpBlockSizes[blockIndex];
+
+                // Try to send the packet to mem ctrl
+                if (!memctrl_side_port.sendTimingReq(pkt)) {
+                    DPRINTF(CXLMemCtrl, "Downstream controller cannot accept packet, will retry\n");
+                    // Will retry when recvReqRetry is called
+                    resendReq = true;
+                    nextRWState = WRITE;
+                    return;
+                }
+                DPRINTF(CXLMemCtrl, "Forwarded packet to downstream controller\n");
+
+                writeQueue.pop_front();
+                cmpedPkt++; // Increment compressed packet count
+                pktIndex++;
+
+                // Update blockIndex when we've processed packetsPerBlock packets
+                if (pktIndex % packetsPerBlock == 0 && blockIndex < cmpBlockSizes.size() - 1) {
+                    blockIndex++;
+                }
+            }
         }
 
         // Identify next state
         if (cmpedPkt >= writePktThreshold || writeQEmpty()) {
             nextRWState = START;
             cmpedPkt = 0;
+            cmpBlockSizes.clear();
         } else {
             nextRWState = WRITE;
         }
@@ -584,7 +629,10 @@ CXLMemCtrl::processResponseEvent()
         stats.latencyHistogram.sample(latency);
 
         // Record read packets latency from DRAM
-        stats.totalDRAMReadLatency += latency;
+        auto readIt = compressedBlockSizes.find(pkt->getAddr());
+        if (readIt != compressedBlockSizes.end()) {
+            stats.totalDRAMReadLatency += latency;
+        }
         packetLatency.erase(it);
     }
 
@@ -612,44 +660,220 @@ CXLMemCtrl::processResponseEvent()
     }
 }
 
-void CXLMemCtrl::LZ4Compression() {
-    // Calculate total source size and destination capacity
-    const int srcSize = writePktThreshold * 64; 
-    int dstCapacity = LZ4_compressBound(srcSize);
-    char* src = new char[srcSize];
-    char* dst = new char[dstCapacity];
-
+void 
+CXLMemCtrl::fillSourceBuffer(char* srcBuffer, int startIndex, int packetsToProcess,
+                             int packetCount)
+{
     int offset = 0;
-    int packetCount = writeQueue.size();
-
-    // Loop to gather data from available packets in writeQueue
-    for (int i = 0; i < writePktThreshold; ++i) {
+    for (int i = startIndex; i < startIndex + packetsToProcess; ++i) {
         if (i < packetCount) {
             PacketPtr pkt = writeQueue[i];
             const uint8_t* pktData = pkt->getConstPtr<uint8_t>();
-            memcpy(src + offset, pktData, pkt->getSize());
-            offset += pkt->getSize();
+            memcpy(srcBuffer + offset, pktData, pkt->getSize());
         } else {
             // Fill remaining space with zeros
-            memset(src + offset, 0, 64); 
-            offset += 64;
+            memset(srcBuffer + offset, 0, 64);
+        }
+        offset += 64; // Each packet is 64 bytes
+    }
+}
+
+#include <vector> // Include the vector header for std::vector
+
+std::vector<unsigned int> 
+CXLMemCtrl::DynamicCompression(int blockSizeInKB) 
+{
+    // Total number of packets in the write queue
+    const int packetCount = writeQueue.size();
+
+    // Total number of packets we plan to process
+    const int totalPackets = writePktThreshold;
+
+    // Each packet is 64 bytes
+    const int packetSize = 64; // bytes
+
+    // Calculate the number of packets per block based on the granularity
+    const int packetsPerBlock = (blockSizeInKB * 1024) / packetSize;
+
+    // Calculate the number of blocks
+    const int numBlocks = totalPackets / packetsPerBlock;
+
+    // Source size per block in bytes
+    const int srcSizePerBlock = packetsPerBlock * packetSize;
+
+    // Destination capacity per block for compression
+    const int dstCapacityPerBlock = LZ4_compressBound(srcSizePerBlock);
+
+    // Vector to hold compressed sizes for each block
+    std::vector<unsigned int> compressedSizes;
+
+    // Loop over each block
+    for (int block = 0; block < numBlocks; ++block) {
+        // Allocate source and destination buffers for this block
+        char* src = new char[srcSizePerBlock];
+        char* dst = new char[dstCapacityPerBlock];
+
+        // Calculate the starting index for this block in the writeQueue
+        int startIndex = block * packetsPerBlock;
+
+        // Fill src with data from the current block
+        fillSourceBuffer(src, startIndex, packetsPerBlock, packetCount);
+
+        // Compress the block
+        int compressedSize = LZ4_compress_default(
+            src, dst, srcSizePerBlock, dstCapacityPerBlock);
+
+        // Check for compression failure or incompressible data
+        // Define incompressible as compressed size not smaller than original size
+        if (compressedSize <= 0 || compressedSize >= srcSizePerBlock) {
+            DPRINTF(CXLMemCtrl, "Compression failed or data is incompressible for block %d\n", block);
+
+            // Clean up allocated memory
+            delete[] src;
+            delete[] dst;
+
+            // Return empty array to indicate failure
+            return std::vector<unsigned int>();
+        }
+
+        // Add the compressed size to the vector
+        compressedSizes.push_back(compressedSize);
+
+        // Clean up allocated memory
+        delete[] src;
+        delete[] dst;
+    }
+
+    // Return the vector of compressed sizes
+    return compressedSizes;
+}
+
+
+std::vector<unsigned int> 
+CXLMemCtrl::CompressionSelectedSize() 
+{
+    const unsigned int packetSize = 64; // bytes
+    const unsigned int totalPackets = writePktThreshold; // e.g., 64 packets
+    const unsigned int totalUncompressedSize = totalPackets * packetSize; // e.g., 4096 bytes
+
+    // Attempt to compress at 1KB granularity
+    std::vector<unsigned int> compressedSizes1KB = DynamicCompression(1);
+    unsigned int totalCompressedSize1KB = UINT_MAX;
+    bool have1KB = false;
+    if (!compressedSizes1KB.empty()) {
+        totalCompressedSize1KB = 0;
+        for (unsigned int size : compressedSizes1KB) {
+            totalCompressedSize1KB += size;
+        }
+        have1KB = true;
+    }
+
+    // Attempt to compress at 2KB granularity
+    std::vector<unsigned int> compressedSizes2KB = DynamicCompression(2);
+    unsigned int totalCompressedSize2KB = UINT_MAX;
+    bool have2KB = false;
+    if (!compressedSizes2KB.empty()) {
+        totalCompressedSize2KB = 0;
+        for (unsigned int size : compressedSizes2KB) {
+            totalCompressedSize2KB += size;
+        }
+        have2KB = true;
+    }
+
+    // Attempt to compress at 4KB granularity
+    std::vector<unsigned int> compressedSizes4KB = DynamicCompression(4);
+    unsigned int totalCompressedSize4KB = UINT_MAX;
+    bool have4KB = false;
+    if (!compressedSizes4KB.empty()) {
+        totalCompressedSize4KB = compressedSizes4KB[0]; // Only one block
+        have4KB = true;
+    }
+
+    // Compare 1KB and 2KB compressed sizes
+    std::vector<unsigned int> winnerCompressedSizes;
+    unsigned int totalCompressedSizeWinner = UINT_MAX;
+    if (have1KB && have2KB) {
+        if (totalCompressedSize2KB <= 0.8 * totalCompressedSize1KB) {
+            // 2KB is better
+            winnerCompressedSizes = compressedSizes2KB;
+            totalCompressedSizeWinner = totalCompressedSize2KB;
+        } else {
+            // 1KB is better
+            winnerCompressedSizes = compressedSizes1KB;
+            totalCompressedSizeWinner = totalCompressedSize1KB;
+        }
+    } else if (have1KB) {
+        // Only 1KB compression succeeded
+        winnerCompressedSizes = compressedSizes1KB;
+        totalCompressedSizeWinner = totalCompressedSize1KB;
+    } else if (have2KB) {
+        // Only 2KB compression succeeded
+        winnerCompressedSizes = compressedSizes2KB;
+        totalCompressedSizeWinner = totalCompressedSize2KB;
+    } else {
+        // Neither 1KB nor 2KB compression succeeded
+        // Handle as needed, here we proceed to compare with 4KB if available
+    }
+
+    // Compare the winner with 4KB compressed size
+    if (have4KB) {
+        if (totalCompressedSizeWinner != UINT_MAX) {
+            // Both winner and 4KB compressed sizes are available
+            if (totalCompressedSize4KB <= 0.5 * totalCompressedSizeWinner) {
+                // 4KB is significantly better
+                return compressedSizes4KB;
+            } else {
+                // Stick with the winner
+                return winnerCompressedSizes;
+            }
+        } else {
+            // Only 4KB compression succeeded
+            return compressedSizes4KB;
+        }
+    } else {
+        if (totalCompressedSizeWinner != UINT_MAX) {
+            // Return the winner
+            return winnerCompressedSizes;
+        } else {
+            // No compression succeeded
+            // Handle as needed, here we return an empty vector
+            DPRINTF(CXLMemCtrl, "Compression failed at all granularities\n");
+            return std::vector<unsigned int>();
         }
     }
-
-    int compressedSize = LZ4_compress_default(src, dst, srcSize, dstCapacity);
-    if (compressedSize > 0) {
-        DPRINTF(CXLMemCtrl, "Compressed %d packets from %d bytes to %d bytes\n",
-                writePktThreshold, srcSize, compressedSize);
-        stats.totalCompressedPacketsSize += compressedSize;
-        // Increment compressed packets number
-        stats.totalCompressedPacketsNum += 1;
-    } else {
-        DPRINTF(CXLMemCtrl, "Compression failed for packets\n");
-    }
-
-    delete[] src;
-    delete[] dst;
 }
+
+std::vector<unsigned int> 
+CXLMemCtrl::LZ4Compression() {
+    // Calculate total source size and destination capacity
+    std::vector<unsigned int> selectedCompressedSizes = CompressionSelectedSize();
+
+    if (!selectedCompressedSizes.empty()) {
+        for (size_t i = 0; i < selectedCompressedSizes.size(); ++i) {
+            unsigned int compressedSize = selectedCompressedSizes[i];
+
+            if (compressedSize > 0) {
+                // Round up compressed size to the next multiple of 64 bytes
+                if (compressedSize % 64 != 0) {
+                    compressedSize = ((compressedSize + 63) / 64) * 64;
+                }
+
+                // Update the vector with the adjusted compressed size
+                selectedCompressedSizes[i] = compressedSize;
+
+                // Update statistics
+                stats.totalCompressedPacketsSize += compressedSize;
+                stats.totalCompressedPacketsNum += 1;
+                stats.compressedSizeHistogram.sample(compressedSize);
+            } else {
+                DPRINTF(CXLMemCtrl, "Compression failed for block %zu\n", i);
+                selectedCompressedSizes[i] = 0;
+            }
+        }
+    }
+    return selectedCompressedSizes;
+}
+
 
 AddrRangeList
 CXLMemCtrl::getAddrRanges()
@@ -701,8 +925,6 @@ CXLStats(CXLMemCtrl &_cxlmc)
             "Total write latency of all packets in Tick"),
     ADD_STAT(totGap, statistics::units::Tick::get(),
             "Total gap between packets in Tick"),
-    ADD_STAT(totalCompressionLatency, statistics::units::Tick::get(),
-            "Total compression latency"),
     ADD_STAT(totalReadCopyLatency, statistics::units::Tick::get(),
             "Total Read Copy latency"),
 
@@ -716,6 +938,8 @@ CXLStats(CXLMemCtrl &_cxlmc)
             "Total number of write packets"),
     ADD_STAT(totalDRAMReadPacketsNum, statistics::units::Count::get(),
             "Total number of DRAM read packets"),
+    ADD_STAT(totalNonDRAMReadPacketsNum, statistics::units::Count::get(),
+            "Total number of DRAM read packets"),        
     
     ADD_STAT(totalCompressionTimes, statistics::units::Count::get(),
             "Total number of compression happens"),
@@ -744,6 +968,8 @@ CXLStats(CXLMemCtrl &_cxlmc)
             "Read Latency histogram"),
     ADD_STAT(writeLatencyHistogram, statistics::units::Tick::get(),
             "Write Latency histogram"),
+    ADD_STAT(compressedSizeHistogram, statistics::units::Tick::get(),
+            "Write Latency histogram"),
 
     ADD_STAT(avgLatency, statistics::units::Rate<
                 statistics::units::Tick, statistics::units::Count>::get(),
@@ -760,9 +986,6 @@ CXLStats(CXLMemCtrl &_cxlmc)
     ADD_STAT(avgDRAMReadLatency, statistics::units::Rate<
                 statistics::units::Tick, statistics::units::Count>::get(),
             "Average DRAM read latency per packet in ns"),
-    ADD_STAT(avgCompressionLatency, statistics::units::Rate<
-                statistics::units::Tick, statistics::units::Count>::get(),
-            "Average latency per compression in ns"),
     ADD_STAT(avgReadCopyLatency, statistics::units::Rate<
                 statistics::units::Tick, statistics::units::Count>::get(),
             "Average DRAM actual read copy latency per packet in ns")
@@ -805,6 +1028,11 @@ CXLMemCtrl::CXLStats::regStats()
         .init(10)
         .flags(nozero | nonan)
         ;
+    
+    compressedSizeHistogram
+        .init(10)
+        .flags(nozero | nonan)
+        ;
 
     // Configure avgLatency
     avgLatency.precision(4);
@@ -820,7 +1048,6 @@ CXLMemCtrl::CXLStats::regStats()
     avgReadLatency = totalReadLatency / totalReadPacketsNum / tick_to_ns;
     avgWriteLatency = totalWriteLatency / totalWritePacketsNum / tick_to_ns;
     avgDRAMReadLatency = totalDRAMReadLatency / totalDRAMReadPacketsNum / tick_to_ns;
-    avgCompressionLatency = totalCompressionLatency / totalCompressionTimes / tick_to_ns;
     avgReadCopyLatency = totalReadCopyLatency / totalDRAMReadPacketsNum / tick_to_ns;
 
     // Configure avg Compressed Size
