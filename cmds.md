@@ -1,4 +1,7 @@
+For the environment setup, you can build all dependencies by your own, or follow the docker setup below to build the test environment.
+
 ## Steps to build the docker:
+
 Useful Website: https://www.gem5.org/documentation/general_docs/building#dependencies
 0. Install the docker application on the website
 
@@ -42,7 +45,9 @@ docker run --name gem5_v0 -it -v D:\RPI\CXL_mem_ctrl\:/home/root fyhgem5_img
 docker start -ai gem5_v0
 
 **Compile gem5:**
-scons build/{ISA}/gem5.{variants} -j 12    //ISA includes x86, arm, RISCV;      variants includes opt, debug, fast
+scons build/{ISA}/gem5.{variants} -j 12    // ISA includes x86, arm, RISCV;      variants includes opt, debug, fast
+
+e.g. The one we used: scons build/X86_MSI/gem5.opt -j 12
 
 **Compile gem5 with Cache Coherence Protocol:**
 scons defconfig build/X86_MSI build_opts/X86
@@ -55,9 +60,14 @@ scons build/X86_MSI/gem5.opt
 scons build/{ISA}/gem5.{variants} -c
 
 **Run Scripts:**
+
+under gem5 folder:
+
 ./build/{ISA}/gem5.{variant} [gem5 options] {simulation script} [script options]
 
-e.g build/X86/gem5.opt --debug-flags=CXLMemCtrl configs/cxl_mem/main_config.py | head -n 50
+e.g build/X86_MSI/gem5.opt configs/cxl_mem/{config file in the gem5/configs/cxl_mem}
 
-Multicore script run:
-e.g build/X86_MSI/gem5.opt --debug-flags=CXLMemCtrl configs/cxl_mem/multi_core.py  
+**Test with debug flags**:
+
+e.g build/X86_MSI/gem5.opt --debug-flags=CXLMemCtrl configs/cxl_mem/{config file in the gem5/configs/cxl_mem} | head -n 50
+

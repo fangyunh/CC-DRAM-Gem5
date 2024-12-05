@@ -21,10 +21,10 @@ class OptionsDDR4:
         self.mem_type = 'DDR4_2400_4x16'
         self.mem_ranks = None
         self.enable_dram_powerdown = None
-        self.mem_channels_intlv = 2048
+        self.mem_channels_intlv = 4096
         self.xor_low_bit = 20
 
-options = OptionsDDR5()
+options = OptionsDDR4()
 
 # Create the system
 system = System()
@@ -51,7 +51,7 @@ thispath = os.path.dirname(os.path.realpath(__file__))
 binary = os.path.join(
     thispath,
     "../../",
-    "tests/test-progs/threads/bin/x86/linux/threads",
+    "tests/test-progs/writeAndRead/bin/x86/linux/test",
 )
 
 # Create a process for a simple "multi-threaded" application

@@ -21,10 +21,10 @@ class OptionsDDR4:
         self.mem_type = 'DDR4_2400_4x16'
         self.mem_ranks = None
         self.enable_dram_powerdown = None
-        self.mem_channels_intlv = 2048
+        self.mem_channels_intlv = 4096
         self.xor_low_bit = 20
 
-options = OptionsDDR5()
+options = OptionsDDR4()
 
 # Create the system
 system = System()
@@ -43,7 +43,7 @@ system.cxl_mem_ctrl = CXLMemCtrl(
     write_buffer_size=128,
     response_buffer_size=64,
     # Could be 2KB when using DDR4
-    compressed_size=1024
+    compressed_size=4096
 )
 
 # Create the Ruby System
@@ -60,10 +60,12 @@ system.cxl_mem_ctrl.memctrl_side_port = system.membus.cpu_side_ports
 config_mem(options, system)
 
 thispath = os.path.dirname(os.path.realpath(__file__))
+# "tests/test-progs/threads/bin/x86/linux/threads",
+# "tests/test-progs/writeAndRead/bin/x86/linux/test",
 binary = os.path.join(
     thispath,
     "../../",
-    "tests/test-progs/threads/bin/x86/linux/threads",
+    "tests/test-progs/writeAndRead/bin/x86/linux/test",
 )
 
 # Create a process for a simple "multi-threaded" application
@@ -87,5 +89,6 @@ root = Root(full_system=False, system=system)
 m5.instantiate()
 
 print("Beginning simulation!")
+print("The cache line size: ", system.cache_line_size)
 exit_event = m5.simulate()
 print(f"Exiting @ tick {m5.curTick()} because {exit_event.getCause()}")

@@ -353,7 +353,6 @@ CXLMemCtrl::handleReadRequest(PacketPtr pkt)
 
         // Add the new packet to the read queue
         readQueue.push_back(new_pkt);
-        stats.totalDRAMReadPacketsNum += 1;
     } else {
         readQueue.push_back(pkt);
         stats.totalNonDRAMReadPacketsNum += 1;
@@ -632,6 +631,7 @@ CXLMemCtrl::processResponseEvent()
         auto readIt = compressedBlockSizes.find(pkt->getAddr());
         if (readIt != compressedBlockSizes.end()) {
             stats.totalDRAMReadLatency += latency;
+            stats.totalDRAMReadPacketsNum += 1;
         }
         packetLatency.erase(it);
     }
@@ -677,8 +677,6 @@ CXLMemCtrl::fillSourceBuffer(char* srcBuffer, int startIndex, int packetsToProce
         offset += 64; // Each packet is 64 bytes
     }
 }
-
-#include <vector> // Include the vector header for std::vector
 
 std::vector<unsigned int> 
 CXLMemCtrl::DynamicCompression(int blockSizeInKB) 
