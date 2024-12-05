@@ -1,5 +1,7 @@
 # Compression Capable DRAM
 
+Yunhua Fang
+
 ## Abstract
 
 We are hitting the Memory Wall that the development of DRAM cannot follow the step of CPU. CPU turns to be more advanced, but DRAM plays as a bottleneck to restrict the whole performance of the system. Applying compression on the main memory is one way to expanding the bandwidth and increasing the capacity of storage space before new evolutional  techniques occur on main memory. In this project, we implement a Compression-Capable design on the memory controller based in Gem5 simulated system. We also test the read latency between its interaction with CPU to figure out the performance degradation it brings to the system. 
@@ -20,6 +22,8 @@ Our major works focus on building the compression capable DRAM memory controller
 - Sconscript: File that help Gem5 senses our works and compile it with the whole system
 
 **gem5/configs/cxl_mem**: 
+
+- **For all configs, you can adjust the test script you assigned in it**
 
 - cxl_mcore_mchannel.py: System configuration of 2 cores with 2 DDR4 channels (also can be adjusted to DDR5) with our memory controller.
 - mcore_mchannel_no_cxl.py: System configuration of 2 cores with 2 DDR4 channels (also can be adjusted to DDR5) without our memory controller.
